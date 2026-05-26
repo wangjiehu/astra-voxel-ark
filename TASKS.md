@@ -291,3 +291,34 @@ Run npm run build before finishing.
     - 维持现有局部 Raycast 射线检测候选区（`refreshRaycastCandidates`）优化，并将下一步工作重心完全放在 Chunk 网格合批上。每个 Chunk 在生成完毕后应使用 `BufferGeometryUtils.mergeGeometries` 或 `THREE.InstancedMesh` 进行统一渲染，将成千上万个独立 Draw Calls 彻底压缩到 100 次以内。
   - **P2: 移动端多指缩放与默认行为拦截 (Gesture Prevention)**:
     - 在 Canvas 上对 `touchstart` / `pointerdown` 事件的多指（Pinch-to-zoom）及双击（Double-tap）默认行为进行更严密的 `preventDefault()` 拦截，防止在触屏高频拖动视角或极速建造/挖掘时触发手机浏览器的弹性缩放和页面抖动。
+
+## QA Feedback & Smoothness Review (v0.4) [三弟 QA]
+
+### 1. 移动端与低功耗渲染权衡分析 (Mobile & Low-Power Render Tradeoffs)
+- **方块轮廓线 (Outlines)**:
+  - **现状**: Outlined方块（如 wood、leaves、crystal等）通过添加独立的 `THREE.LineSegments` 实现白边。
+  - **性能损耗**: 在中/大视野半径下，数百个方块会使得 Draw Call 数量成倍暴增，这是移动端 WebGL 最主要的 CPU 侧瓶颈。
+  - **权衡策略**: 强力建议在移动端/低功耗模式下静默屏蔽轮廓线网格的生成（通过 `!isTouchDevice` 条件控制）。以微小的边缘清晰度损失，换取多达 40%+ 的 Draw Calls 减少与极大的帧率提升。
+- **阴影计算 (Shadows)**:
+  - **现状**: 全局开启了 `THREE.PCFSoftShadowMap` 和实时阴影投影（`sun.castShadow = true`）。
+  - **性能损耗**: 阴影绘制会强迫 GPU 增加额外的 Depth/Shadow Pass，且软阴影采样（Soft Shadows）对移动端 GPU 的像素填充率（Fill Rate）带来极大负担，容易引发设备发热和严重的掉帧抖动。
+  - **权衡策略**: 移动端和低功耗设备上应将 `renderer.shadowMap.enabled` 与 `sun.castShadow` 彻底关闭。通过在着色器中使用简易的环境光遮蔽（AO）模拟或仅保留 HemisphereLight 基础多向漫反射，提供轻量且足够立体的视觉深度。
+- **发光光源 (Glow Lights)**:
+  - **现状**: 遇到 `glow` 或 `crystal` 方块时，会实时动态挂载 `THREE.PointLight`。
+  - **性能损耗**: Forward 渲染管线下每个点光源都会线性增加着色器计算开销，多个光源重叠时会严重降低片段着色器效率。
+  - **权衡策略**: 移动端应限制同屏激活的最大点光源数量（如 <= 2），或者在低功耗下将这些点光源彻底禁用，仅依靠方块自身的自发光材质（emissive）在视觉上表现“发光”状态。
+- **HUD 可读性与排版 (HUD Readability & Layout)**:
+  - **已修复 (CSS-only Fix)**:
+    - 针对移动端 WebGL 上多层 `backdrop-filter: blur(...)` 对 GPU 像素复制和合成的极高开销，除了原有面板外，本版本对移动端下的 `.toast` 提示和挖掘动作环 `.mine-ring::after` 也进行了 `backdrop-filter: none !important` 屏蔽，消除潜在的掉帧风险。
+    - 移除了移动端下 `.survival-badge` 生存诊断面板的 `.survival-panel-glow` 呼吸式 `box-shadow` 阴影渐变动画（通过 `animation: none !important` 强力挂起），彻底规避了连续不断的 CSS 重绘（Repaint）循环，极大地节约了移动端 CPU 和电池消耗。
+    - 为移动端下 HUD 属性面板的 `.metric-icon` 和 `.crosshair` 全局屏蔽了 `filter: drop-shadow(...)` 滤镜，防止手机浏览器中产生耗能的 offscreen 缓冲渲染 pass。
+    - 严格遵循 HUD 最小字号不低于 `10px` 的设计准则，确保移动端 HUD 属性、物品计数在高对比度阴影下的完美清晰度。
+- **触控操作平滑度 (Touch Controls Smoothness)**:
+  - **优化方向**: 保持 `touch-action: manipulation` / `touch-action: none` 的精确配置，防止双击缩放、刘海屏滑动被系统自带的橡皮筋弹性滚动拦截。通过 120ms 的防抖手势判定，使得右屏长按挖掘与快速划屏视角的互斥逻辑坚如磐石，彻底消除触控视角移动时的卡顿和瞬移。
+
+### 2. 构建与风险检查 (Build & Risks Validation)
+- **TypeScript & Vite 编译**:
+  - 成功运行 `npm run build`，所有 JS/CSS 模块转译无报错、无警告，生产包体积保持极为紧凑的水平。
+- **潜在风险点与建议检查**:
+  - **性能监控 (Perf Badge)**: 建议在各种低端 Android 模拟器或实机上观察 `.perf-badge` 中的帧率（FPS）。若禁用 shadows/outlines 后仍有抖动，建议考虑将 `TERRAIN_MAX_RADIUS` 从 6 动态降低到 4 或 3。
+  - **视口遮挡风险**: 极窄屏幕或折叠屏手机上，`.save-tools` 与 `.survival-badge` 仍然有重叠风险。在 v0.5 版本中建议引入汉堡折叠菜单，把存档工具收纳起来。

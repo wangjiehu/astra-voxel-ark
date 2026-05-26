@@ -180,7 +180,7 @@ body.portrait-touch .mobile-controls, body.portrait-touch .hotbar { display: non
 .hidden { display: none; }
 
 @media (pointer: coarse), (max-width: 760px) {
-  .title, .help, .world-badge, .save-tools, .survival-badge, .tutorial, .perf-badge, .block-info, .hotbar, .joystick, .touch-btn, .panel {
+  .title, .help, .world-badge, .save-tools, .survival-badge, .tutorial, .perf-badge, .block-info, .hotbar, .joystick, .touch-btn, .panel, .toast, .mine-ring::after {
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
   }
@@ -202,6 +202,7 @@ body.portrait-touch .mobile-controls, body.portrait-touch .hotbar { display: non
     font-size: 10px;
     border-color: rgba(141, 117, 255, 0.25);
     background: rgba(12, 16, 32, 0.94) !important;
+    animation: none !important;
   }
   .survival-title {
     font-size: 10px;
@@ -214,6 +215,9 @@ body.portrait-touch .mobile-controls, body.portrait-touch .hotbar { display: non
   }
   .metric-label { min-width: 66px; }
   .metric-value { font-size: 10px; }
+  .metric-icon, .crosshair {
+    filter: none !important;
+  }
   .tutorial { display: none; left: calc(12px + env(safe-area-inset-left)); top: 162px; max-width: 200px; padding: 10px 12px; font-size: 12px; z-index: 10; }
   .tutorial.visible-mobile { display: block !important; }
   .help-toggle-btn { display: flex; right: calc(12px + env(safe-area-inset-right)); top: 10px; width: 36px; height: 36px; font-size: 15px; }

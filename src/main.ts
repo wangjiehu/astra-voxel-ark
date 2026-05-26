@@ -6,8 +6,11 @@ import { animateBlockMaterials, createBlockMaterials } from './textures'
 import { blockKey, terrainNoise } from './worldMath'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
-const GAME_VERSION_LABEL = 'v0.3 Smooth Architecture'
+const GAME_VERSION_LABEL = 'v0.4 Render Smoothness'
 const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0
+const isSmallScreen = Math.min(window.innerWidth, window.innerHeight) <= 760
+const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+const lowPowerMode = isTouchDevice || isSmallScreen || prefersReducedMotion
 
 app.innerHTML = `
   <div class="hud">
@@ -55,6 +58,8 @@ app.innerHTML = `
       <div class="perf-metric"><span class="perf-label">Blocks</span><span class="perf-blocks">0</span></div>
       <div class="perf-divider"></div>
       <div class="perf-metric"><span class="perf-label">Queue</span><span class="perf-dirty">0</span></div>
+      <div class="perf-divider"></div>
+      <div class="perf-metric"><span class="perf-label">Mode</span><span class="perf-mode">${lowPowerMode ? 'Low' : 'Full'}</span></div>
     </div>
     <button class="help-toggle-btn" aria-label="Toggle Help">?</button>
     <div class="tutorial">
@@ -83,7 +88,7 @@ app.innerHTML = `
       </div>
     </div>
     <div class="rotate-prompt"><div><span>↻</span><strong>请横屏游玩</strong><small>Rotate your phone to landscape</small></div></div>
-    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v0.3</h2><p>Smooth Architecture - lower frame and interaction cost</p><button>Start Exploring</button></div></div>
+    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v0.4</h2><p>Render Smoothness - adaptive visuals for steadier frames</p><button>Start Exploring</button></div></div>
   </div>
 `
 
@@ -98,10 +103,10 @@ scene.fog = sceneFog
 const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.1, 600)
 camera.position.set(0, 12, 18)
 
-const renderer = new THREE.WebGLRenderer({ antialias: !isTouchDevice, powerPreference: 'high-performance' })
+const renderer = new THREE.WebGLRenderer({ antialias: !lowPowerMode, powerPreference: lowPowerMode ? 'low-power' : 'high-performance' })
 renderer.setSize(window.innerWidth, window.innerHeight)
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, isTouchDevice ? 1.25 : 1.5))
-renderer.shadowMap.enabled = true
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, lowPowerMode ? 1.1 : 1.5))
+renderer.shadowMap.enabled = !lowPowerMode
 renderer.shadowMap.type = THREE.PCFSoftShadowMap
 renderer.toneMapping = THREE.ACESFilmicToneMapping
 renderer.toneMappingExposure = 1.08
@@ -115,7 +120,7 @@ scene.add(hemi)
 
 const sun = new THREE.DirectionalLight(0xfff3c4, 2.9)
 sun.position.set(38, 55, 22)
-sun.castShadow = true
+sun.castShadow = !lowPowerMode
 sun.shadow.mapSize.set(1024, 1024)
 sun.shadow.camera.left = -56
 sun.shadow.camera.right = 56
@@ -149,7 +154,7 @@ const TERRAIN_MAX_RADIUS = 6
 const TERRAIN_CHUNKS_PER_FRAME = 1
 const TERRAIN_SCAN_INTERVAL = 0.2
 const RAYCAST_REACH = 8
-const GRASS_ANIMATION_BUDGET = isTouchDevice ? 70 : 140
+const GRASS_ANIMATION_BUDGET = lowPowerMode ? 55 : 140
 const BLOCK_IDS = new Set<BlockId>(BLOCKS.map((block) => block.id))
 type SavedBlock = [number, number, number, BlockId]
 type SavedWorld = {
@@ -219,6 +224,9 @@ const grassBladeMaterial = new THREE.MeshStandardMaterial({
   roughness: 0.95,
 })
 const outlinedBlockIds = new Set<BlockId>(['wood', 'leaves', 'crystal', 'glow', 'brick', 'obsidian', 'copper', 'gold'])
+const enableBlockOutlines = !lowPowerMode
+const enableBlockShadows = !lowPowerMode
+const MAX_GLOW_LIGHTS = lowPowerMode ? 12 : Number.POSITIVE_INFINITY
 let blockMutationVersion = 0
 let grassAnimationCursor = 0
 const STARTER_INVENTORY: Partial<Record<BlockId, number>> = {
@@ -351,8 +359,8 @@ function addBlock(x: number, y: number, z: number, id: BlockId, source: BlockSou
   }
   const mesh = new THREE.Mesh(cubeGeometry, materials.get(id)!)
   mesh.position.set(x, y, z)
-  mesh.castShadow = id === 'wood' || id === 'leaves' || id === 'crystal' || id === 'glow'
-  mesh.receiveShadow = true
+  mesh.castShadow = enableBlockShadows && (id === 'wood' || id === 'leaves' || id === 'crystal' || id === 'glow')
+  mesh.receiveShadow = enableBlockShadows
   mesh.userData.block = true
   mesh.userData.id = id
   world.add(mesh)
@@ -362,7 +370,7 @@ function addBlock(x: number, y: number, z: number, id: BlockId, source: BlockSou
   blockData.set(k, id)
   registerBlockInChunk(x, y, z, id, k)
 
-  if (outlinedBlockIds.has(id)) {
+  if (enableBlockOutlines && outlinedBlockIds.has(id)) {
     const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial)
     mesh.add(edges)
   } else if (id === 'water') {
@@ -370,8 +378,12 @@ function addBlock(x: number, y: number, z: number, id: BlockId, source: BlockSou
     waterBlocks.push(mesh)
   }
 
-  if (id === 'glow' || id === 'crystal') {
-    const light = new THREE.PointLight(id === 'glow' ? 0xffcf7a : 0x9b86ff, id === 'glow' ? 1.2 : 0.75, 8)
+  if ((id === 'glow' || id === 'crystal') && glowLights.length < MAX_GLOW_LIGHTS) {
+    const light = new THREE.PointLight(
+      id === 'glow' ? 0xffcf7a : 0x9b86ff,
+      lowPowerMode ? (id === 'glow' ? 0.55 : 0.35) : (id === 'glow' ? 1.2 : 0.75),
+      lowPowerMode ? 5 : 8,
+    )
     light.position.set(x, y + 0.2, z)
     scene.add(light)
     mesh.userData.light = light
@@ -991,7 +1003,7 @@ const platform = new THREE.Mesh(
   new THREE.MeshStandardMaterial({ color: 0x55657b, roughness: 0.9 })
 )
 platform.position.y = -2
-platform.receiveShadow = true
+platform.receiveShadow = !lowPowerMode
 scene.add(platform)
 
 const stars = new THREE.Group()
