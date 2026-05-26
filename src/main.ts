@@ -6,7 +6,7 @@ import { animateBlockMaterials, createBlockMaterials } from './textures'
 import { blockKey, terrainNoise } from './worldMath'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
-const GAME_VERSION_LABEL = 'v1.1 Smooth Playability'
+const GAME_VERSION_LABEL = 'v1.2 Chunk Mesh Foundation'
 const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0
 const isSmallScreen = Math.min(window.innerWidth, window.innerHeight) <= 760
 const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -88,7 +88,7 @@ app.innerHTML = `
       </div>
     </div>
     <div class="rotate-prompt"><div><span>↻</span><strong>请横屏游玩</strong><small>Rotate your phone to landscape</small></div></div>
-    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v1.1</h2><p>Smooth Playability - tuned movement, steadier input, adaptive effects</p><button>Start Exploring</button></div></div>
+    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v1.2</h2><p>Chunk Mesh Foundation - visible-face chunk metadata for future meshing</p><button>Start Exploring</button></div></div>
   </div>
 `
 
@@ -217,12 +217,26 @@ type ChunkBucket = {
   material: THREE.Material | THREE.Material[]
   blockKeys: Set<string>
 }
+type ChunkMeshBucketStats = {
+  blockCount: number
+  visibleBlockCount: number
+  visibleFaceCount: number
+}
+type ChunkVisibleFaceSummary = {
+  revision: number
+  solidBlockCount: number
+  visibleSolidBlockCount: number
+  visibleFaceCount: number
+  specialBlockCount: number
+  buckets: Map<BlockId, ChunkMeshBucketStats>
+}
 type ChunkMetadata = {
   key: string
   x: number
   y: number
   z: number
   buckets: Map<BlockId, ChunkBucket>
+  visibleFaceSummary: ChunkVisibleFaceSummary
 }
 const chunks = new Map<string, ChunkMetadata>()
 const dirtyChunkKeys = new Set<string>()
@@ -289,6 +303,14 @@ const SOLID_NEIGHBOR_OFFSETS = [
   [0, 0, 1],
   [0, 0, -1],
 ] as const
+const EMPTY_CHUNK_VISIBLE_FACE_SUMMARY = {
+  revision: 0,
+  solidBlockCount: 0,
+  visibleSolidBlockCount: 0,
+  visibleFaceCount: 0,
+  specialBlockCount: 0,
+  buckets: new Map<BlockId, ChunkMeshBucketStats>(),
+} satisfies ChunkVisibleFaceSummary
 
 function removeArrayItemAtUnordered<T>(array: T[], index: number) {
   const last = array.pop()
@@ -325,6 +347,15 @@ function isSolidBlockId(id: BlockId | undefined): id is Exclude<BlockId, 'water'
 
 function hasExposedSolidFace(x: number, y: number, z: number) {
   return SOLID_NEIGHBOR_OFFSETS.some(([dx, dy, dz]) => !isSolidBlockId(blockData.get(blockKey(x + dx, y + dy, z + dz))))
+}
+
+function countExposedSolidFaces(x: number, y: number, z: number) {
+  if (!isSolidBlockId(blockData.get(blockKey(x, y, z)))) return 0
+  let exposedFaces = 0
+  SOLID_NEIGHBOR_OFFSETS.forEach(([dx, dy, dz]) => {
+    if (!isSolidBlockId(blockData.get(blockKey(x + dx, y + dy, z + dz)))) exposedFaces++
+  })
+  return exposedFaces
 }
 
 function removeGlowLightAt(k: string) {
@@ -481,6 +512,11 @@ function markChunkDirty(key: string) {
   dirtyChunkKeys.add(key)
 }
 
+function markBlockAndNeighborChunksDirty(x: number, y: number, z: number) {
+  markChunkDirty(chunkKeyForBlock(x, y, z))
+  SOLID_NEIGHBOR_OFFSETS.forEach(([dx, dy, dz]) => markChunkDirty(chunkKeyForBlock(x + dx, y + dy, z + dz)))
+}
+
 function getOrCreateChunk(x: number, y: number, z: number) {
   const cx = chunkCoord(x)
   const cy = chunkCoord(y)
@@ -488,7 +524,7 @@ function getOrCreateChunk(x: number, y: number, z: number) {
   const key = chunkKey(cx, cy, cz)
   let chunk = chunks.get(key)
   if (!chunk) {
-    chunk = { key, x: cx, y: cy, z: cz, buckets: new Map() }
+    chunk = { key, x: cx, y: cy, z: cz, buckets: new Map(), visibleFaceSummary: { ...EMPTY_CHUNK_VISIBLE_FACE_SUMMARY, buckets: new Map() } }
     chunks.set(key, chunk)
   }
   return chunk
@@ -502,7 +538,7 @@ function registerBlockInChunk(x: number, y: number, z: number, id: BlockId, key:
     chunk.buckets.set(id, bucket)
   }
   bucket.blockKeys.add(key)
-  markChunkDirty(chunk.key)
+  markBlockAndNeighborChunksDirty(x, y, z)
 }
 
 function unregisterBlockFromChunk(x: number, y: number, z: number, id: BlockId, key: string) {
@@ -519,7 +555,62 @@ function unregisterBlockFromChunk(x: number, y: number, z: number, id: BlockId, 
     if (bucket.blockKeys.size === 0) chunk.buckets.delete(id)
   }
   if (chunk.buckets.size === 0) chunks.delete(cKey)
-  markChunkDirty(cKey)
+  markBlockAndNeighborChunksDirty(x, y, z)
+}
+
+function rebuildChunkVisibleFaceSummary(chunk: ChunkMetadata) {
+  const bucketStats = new Map<BlockId, ChunkMeshBucketStats>()
+  let solidBlockCount = 0
+  let visibleSolidBlockCount = 0
+  let visibleFaceCount = 0
+  let specialBlockCount = 0
+
+  chunk.buckets.forEach((bucket, id) => {
+    const stats: ChunkMeshBucketStats = {
+      blockCount: bucket.blockKeys.size,
+      visibleBlockCount: 0,
+      visibleFaceCount: 0,
+    }
+
+    if (id === 'water') {
+      specialBlockCount += bucket.blockKeys.size
+      bucketStats.set(id, stats)
+      return
+    }
+
+    bucket.blockKeys.forEach((key) => {
+      const [x, y, z] = key.split(',').map(Number)
+      const exposedFaces = countExposedSolidFaces(x, y, z)
+      solidBlockCount++
+      if (exposedFaces > 0) {
+        visibleSolidBlockCount++
+        visibleFaceCount += exposedFaces
+        stats.visibleBlockCount++
+        stats.visibleFaceCount += exposedFaces
+      }
+    })
+    bucketStats.set(id, stats)
+  })
+
+  chunk.visibleFaceSummary = {
+    revision: blockMutationVersion,
+    solidBlockCount,
+    visibleSolidBlockCount,
+    visibleFaceCount,
+    specialBlockCount,
+    buckets: bucketStats,
+  }
+}
+
+function rebuildDirtyChunkVisibleFaceSummaries(limit = Number.POSITIVE_INFINITY) {
+  let rebuilt = 0
+  for (const key of dirtyChunkKeys) {
+    const chunk = chunks.get(key)
+    if (chunk) rebuildChunkVisibleFaceSummary(chunk)
+    dirtyChunkKeys.delete(key)
+    rebuilt++
+    if (rebuilt >= limit) break
+  }
 }
 
 function seededNoise(...values: number[]) {
@@ -1911,14 +2002,14 @@ function updateFrameStats(dt: number, elapsedTime: number) {
     terrainChunksEl.textContent = `${generatedTerrainChunks.size}/${Math.round(Math.PI * TERRAIN_MAX_RADIUS * TERRAIN_MAX_RADIUS)}`
   }
   if (dirtyEl) {
-    dirtyEl.textContent = String(terrainGenerationQueue.length)
+    dirtyEl.textContent = `${terrainGenerationQueue.length}/${dirtyChunkKeys.size}`
   }
-  dirtyChunkKeys.clear()
 }
 
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.05)
   const elapsedTime = clock.elapsedTime
+  rebuildDirtyChunkVisibleFaceSummaries(currentFps > 0 && currentFps < 36 ? 4 : 12)
   updateFrameStats(dt, elapsedTime)
 
   // 更新粒子
