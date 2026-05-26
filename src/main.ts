@@ -6,7 +6,7 @@ import { animateBlockMaterials, createBlockMaterials } from './textures'
 import { blockKey, terrainNoise } from './worldMath'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
-const GAME_VERSION_LABEL = 'v0.6 Grid Raycast'
+const GAME_VERSION_LABEL = 'v0.7 Adaptive Quality'
 const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0
 const isSmallScreen = Math.min(window.innerWidth, window.innerHeight) <= 760
 const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -88,7 +88,7 @@ app.innerHTML = `
       </div>
     </div>
     <div class="rotate-prompt"><div><span>↻</span><strong>请横屏游玩</strong><small>Rotate your phone to landscape</small></div></div>
-    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v0.6</h2><p>Grid Raycast - instant block picking without mesh scans</p><button>Start Exploring</button></div></div>
+    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v0.7</h2><p>Adaptive Quality - smoother frames on desktop and mobile</p><button>Start Exploring</button></div></div>
   </div>
 `
 
@@ -105,7 +105,11 @@ camera.position.set(0, 12, 18)
 
 const renderer = new THREE.WebGLRenderer({ antialias: !lowPowerMode, powerPreference: lowPowerMode ? 'low-power' : 'high-performance' })
 renderer.setSize(window.innerWidth, window.innerHeight)
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, lowPowerMode ? 1.1 : 1.5))
+let renderQuality = lowPowerMode ? 0.85 : 1
+function applyRenderQuality() {
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio * renderQuality, lowPowerMode ? 1.1 : 1.5))
+}
+applyRenderQuality()
 renderer.shadowMap.enabled = !lowPowerMode
 renderer.shadowMap.type = THREE.PCFSoftShadowMap
 renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -171,6 +175,9 @@ const TERRAIN_CHUNKS_PER_FRAME = 1
 const TERRAIN_SCAN_INTERVAL = 0.2
 const RAYCAST_REACH = 8
 const GRASS_ANIMATION_BUDGET = lowPowerMode ? 55 : 140
+const MIN_RENDER_QUALITY = lowPowerMode ? 0.68 : 0.78
+const MAX_RENDER_QUALITY = lowPowerMode ? 0.95 : 1
+const QUALITY_STEP = 0.06
 const BLOCK_IDS = new Set<BlockId>(BLOCKS.map((block) => block.id))
 type SavedBlock = [number, number, number, BlockId]
 type SavedWorld = {
@@ -1659,6 +1666,22 @@ const frameBudgetSamples = new Float32Array(FRAME_SAMPLE_COUNT)
 let frameBudgetIndex = 0
 let frameBudgetCount = 0
 let frameBudgetTotal = 0
+let lastQualityAdjustAt = 0
+
+function updateAdaptiveQuality(avgMs: number, elapsedTime: number) {
+  if (elapsedTime - lastQualityAdjustAt < 2.5) return
+  const previousQuality = renderQuality
+  if ((currentFps > 0 && currentFps < 38) || avgMs > 28) {
+    renderQuality = Math.max(MIN_RENDER_QUALITY, renderQuality - QUALITY_STEP)
+  } else if (currentFps >= 56 && avgMs < 18) {
+    renderQuality = Math.min(MAX_RENDER_QUALITY, renderQuality + QUALITY_STEP)
+  }
+  if (Math.abs(renderQuality - previousQuality) >= 0.01) {
+    applyRenderQuality()
+    lastQualityAdjustAt = elapsedTime
+  }
+}
+
 let lastSurvivalUiAt = -Infinity
 let lastSurvivalCharge = -1
 let lastSurvivalThreat = ''
@@ -1768,7 +1791,7 @@ function updateSurvivalLoop(dt: number, day: number, elapsedTime: number) {
   }
 }
 
-function updateFrameStats(dt: number) {
+function updateFrameStats(dt: number, elapsedTime: number) {
   const frameMs = dt * 1000
   frameBudgetTotal -= frameBudgetSamples[frameBudgetIndex]
   frameBudgetSamples[frameBudgetIndex] = frameMs
@@ -1784,10 +1807,11 @@ function updateFrameStats(dt: number) {
   fpsElapsed = 0
 
   const avgMs = Math.round(frameBudgetTotal / frameBudgetCount)
+  updateAdaptiveQuality(avgMs, elapsedTime)
 
   if (fpsEl && msEl) {
     fpsEl.textContent = String(currentFps)
-    msEl.textContent = String(avgMs)
+    msEl.textContent = `${avgMs} · Q${Math.round(renderQuality * 100)}%`
     fpsEl.style.color = currentFps >= 55 ? '#a8ffb9' : currentFps >= 30 ? '#fff3a8' : '#ffd7fa'
   }
   if (blocksEl) {
@@ -1808,7 +1832,7 @@ function updateFrameStats(dt: number) {
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.05)
   const elapsedTime = clock.elapsedTime
-  updateFrameStats(dt)
+  updateFrameStats(dt, elapsedTime)
 
   // 更新粒子
   for (let i = particles.length - 1; i >= 0; i--) {
@@ -1916,4 +1940,5 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight
   camera.updateProjectionMatrix()
   renderer.setSize(window.innerWidth, window.innerHeight)
+  applyRenderQuality()
 })
