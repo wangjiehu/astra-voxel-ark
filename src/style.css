@@ -180,14 +180,18 @@ body.portrait-touch .mobile-controls, body.portrait-touch .hotbar { display: non
 .hidden { display: none; }
 
 @media (pointer: coarse), (max-width: 760px) {
-  .title { left: calc(12px + env(safe-area-inset-left)); top: 10px; padding: 10px 12px; border-radius: 16px; }
+  .title, .help, .world-badge, .save-tools, .survival-badge, .tutorial, .perf-badge, .block-info, .hotbar, .joystick, .touch-btn, .panel {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  .title { left: calc(12px + env(safe-area-inset-left)); top: 10px; padding: 10px 12px; border-radius: 16px; background: rgba(9, 15, 34, 0.92) !important; }
   .title h1 { font-size: 15px; }
   .title p, .desktop-help { display: none; }
   .mobile-help { display: inline; }
-  .help { display: none; right: calc(12px + env(safe-area-inset-right)); top: 54px; max-width: 188px; padding: 10px 12px; font-size: 11px; line-height: 1.45; border-radius: 16px; z-index: 10; }
+  .help { display: none; right: calc(12px + env(safe-area-inset-right)); top: 54px; max-width: 188px; padding: 10px 12px; font-size: 11px; line-height: 1.45; border-radius: 16px; z-index: 10; background: rgba(9, 15, 34, 0.92) !important; }
   .help.visible-mobile { display: block !important; }
   .world-badge { right: calc(12px + env(safe-area-inset-right)); bottom: 84px; font-size: 10px; }
-  .save-tools { left: calc(12px + env(safe-area-inset-left)); top: 80px; bottom: auto; gap: 5px; padding: 6px; }
+  .save-tools { left: calc(12px + env(safe-area-inset-left)); top: 132px; bottom: auto; gap: 5px; padding: 6px; background: rgba(9, 14, 31, 0.92) !important; }
   .save-tools button { padding: 7px 9px; font-size: 10px; }
   .survival-badge {
     left: calc(12px + env(safe-area-inset-left));
@@ -197,6 +201,7 @@ body.portrait-touch .mobile-controls, body.portrait-touch .hotbar { display: non
     border-radius: 14px;
     font-size: 10px;
     border-color: rgba(141, 117, 255, 0.25);
+    background: rgba(12, 16, 32, 0.94) !important;
   }
   .survival-title {
     font-size: 10px;

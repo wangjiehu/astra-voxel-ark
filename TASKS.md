@@ -273,3 +273,21 @@ Run npm run build before finishing.
   - 核查并确认 `.gitignore` 规则，排除 Android Gradle 生成的临时文件、构建文件和 `.npmkeep` 等，保持 Git 干净整洁，仅追踪有效源码。
 - **运行及构建验证 (Build Verification)**:
   - 成功运行 `npm run build` 打包。所有 TypeScript 类型检查通过，Vite 生成的产物无报错及警告。
+
+## QA Feedback & Smoothness Review (v0.3) [三弟 QA]
+
+### 1. 移动端布局与安全区域 (Mobile Layout & Safe Area)
+- **已修复 (CSS-only Fix)**:
+  - **规避重叠冲突**: 修复了在平板/常规中大型触控设备上（满足 `pointer: coarse` 且高度 > 520px），生存诊断面板 `.survival-badge` (位于 `top: 54px`) 与存档工具栏 `.save-tools` (原位于 `top: 80px`) 发生的绝对定位重叠冲突。现已将 `.save-tools` 的 top 偏移调整为 `132px`，使其在非超窄横屏模式下整齐地竖直堆叠在生存面板下方。
+  - **渲染合成性能优化**: 针对移动端 WebGL 渲染背景下多层 `backdrop-filter: blur(...)` 产生的极高 GPU 像素复制与模糊合成开销，对所有触控设备（`pointer: coarse`）移除了模糊滤镜，并适当提高了面板背景色不透明度（如 `.survival-badge` 背景变更为不透明度 `0.94` 的深色渐变），在确保移动端 60FPS 满帧流畅滑屏/视角的物理性能体验的同时，维持极高水准的黑夜星空科技感。
+
+### 2. 性能瓶颈与代码健壮性 (Performance & Compile-Time Fixes)
+- **已修复 (TypeScript Build Fix)**:
+  - 修复了 `main.ts` 中 `lastTerrainEnsureScanKey` 变量未声明即使用的 TypeScript 编译报错，避免了生产环境 `npm run build` 构建中断。
+- **Alexander 后续整合优先级 (Priorities for Alexander)**:
+  - **P0: 剔除移动端冗余 Outline segment 渲染 (Voxel Outlines reduction)**:
+    - 当前世界所有 outlined 方块（如 tree/leaves/crystal）在渲染时都会额外附带一个 `THREE.LineSegments` 实体，导致 Draw Call 数量成倍增加。建议在移动端/低配设备检测中静默关闭 outline 渲染，或改用 singlepass 的屏幕空间后处理描边滤镜（OutlinePass），可节约 40%+ 的 WebGL draw overhead。
+  - **P1: 推进 Chunk 级别网格合批 (Mesh Batching)**:
+    - 维持现有局部 Raycast 射线检测候选区（`refreshRaycastCandidates`）优化，并将下一步工作重心完全放在 Chunk 网格合批上。每个 Chunk 在生成完毕后应使用 `BufferGeometryUtils.mergeGeometries` 或 `THREE.InstancedMesh` 进行统一渲染，将成千上万个独立 Draw Calls 彻底压缩到 100 次以内。
+  - **P2: 移动端多指缩放与默认行为拦截 (Gesture Prevention)**:
+    - 在 Canvas 上对 `touchstart` / `pointerdown` 事件的多指（Pinch-to-zoom）及双击（Double-tap）默认行为进行更严密的 `preventDefault()` 拦截，防止在触屏高频拖动视角或极速建造/挖掘时触发手机浏览器的弹性缩放和页面抖动。

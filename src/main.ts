@@ -6,7 +6,7 @@ import { animateBlockMaterials, createBlockMaterials } from './textures'
 import { blockKey, terrainNoise } from './worldMath'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
-const GAME_VERSION_LABEL = 'v0.2 Optimization Pass'
+const GAME_VERSION_LABEL = 'v0.3 Smooth Architecture'
 const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0
 
 app.innerHTML = `
@@ -83,7 +83,7 @@ app.innerHTML = `
       </div>
     </div>
     <div class="rotate-prompt"><div><span>↻</span><strong>请横屏游玩</strong><small>Rotate your phone to landscape</small></div></div>
-    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v0.2</h2><p>Optimization Pass - performance and repo hygiene</p><button>Start Exploring</button></div></div>
+    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v0.3</h2><p>Smooth Architecture - lower frame and interaction cost</p><button>Start Exploring</button></div></div>
   </div>
 `
 
@@ -140,12 +140,16 @@ const blockData = new Map<string, BlockId>()
 const glowLights: THREE.PointLight[] = []
 const waterBlocks: THREE.Mesh[] = []
 const grassTufts: THREE.Group[] = []
+const grassTuftsByAnchor = new Map<string, THREE.Group[]>()
 const SAVE_KEY = 'astra-voxel-ark-world-v1'
 const CHUNK_SIZE = 8
 const INITIAL_TERRAIN_LOAD_RADIUS = 1
 const TERRAIN_LOAD_RADIUS = 1
 const TERRAIN_MAX_RADIUS = 6
 const TERRAIN_CHUNKS_PER_FRAME = 1
+const TERRAIN_SCAN_INTERVAL = 0.2
+const RAYCAST_REACH = 8
+const GRASS_ANIMATION_BUDGET = isTouchDevice ? 70 : 140
 const BLOCK_IDS = new Set<BlockId>(BLOCKS.map((block) => block.id))
 type SavedBlock = [number, number, number, BlockId]
 type SavedWorld = {
@@ -183,6 +187,10 @@ const dirtyChunkKeys = new Set<string>()
 const generatedTerrainChunks = new Set<string>()
 const queuedTerrainChunks = new Set<string>()
 const terrainGenerationQueue: Array<{ cx: number; cz: number }> = []
+let lastTerrainEnsureScanKey = ''
+let lastTerrainCenterKey = ''
+let pendingTerrainEnsure: { x: number; z: number } | null = null
+let lastTerrainEnsureAt = -Infinity
 const removedTerrainBlocks = new Set<string>()
 const playerPlacedBlocks = new Set<string>()
 const landmarkShardBlocks = new Set<string>()
@@ -211,6 +219,8 @@ const grassBladeMaterial = new THREE.MeshStandardMaterial({
   roughness: 0.95,
 })
 const outlinedBlockIds = new Set<BlockId>(['wood', 'leaves', 'crystal', 'glow', 'brick', 'obsidian', 'copper', 'gold'])
+let blockMutationVersion = 0
+let grassAnimationCursor = 0
 const STARTER_INVENTORY: Partial<Record<BlockId, number>> = {
   grass: 8,
   dirt: 12,
@@ -220,6 +230,16 @@ const STARTER_INVENTORY: Partial<Record<BlockId, number>> = {
   water: 4,
   crystal: 2,
   glow: 2,
+}
+
+function removeArrayItemAtUnordered<T>(array: T[], index: number) {
+  const last = array.pop()
+  if (index < array.length && last !== undefined) array[index] = last
+}
+
+function removeArrayItemUnordered<T>(array: T[], item: T) {
+  const index = array.indexOf(item)
+  if (index >= 0) removeArrayItemAtUnordered(array, index)
 }
 
 function chunkCoord(value: number) {
@@ -304,15 +324,21 @@ function addGrassTuft(x: number, y: number, z: number) {
   }
   world.add(tuft)
   grassTufts.push(tuft)
+  const anchorKey = tuft.userData.anchorKey as string
+  const anchorTufts = grassTuftsByAnchor.get(anchorKey)
+  if (anchorTufts) anchorTufts.push(tuft)
+  else grassTuftsByAnchor.set(anchorKey, [tuft])
 }
 
 function removeGrassTuftsAt(anchorKey: string) {
-  for (let i = grassTufts.length - 1; i >= 0; i--) {
-    const tuft = grassTufts[i]
-    if (tuft.userData.anchorKey !== anchorKey) continue
+  const anchorTufts = grassTuftsByAnchor.get(anchorKey)
+  if (!anchorTufts) return
+  for (let i = anchorTufts.length - 1; i >= 0; i--) {
+    const tuft = anchorTufts[i]
     world.remove(tuft)
-    grassTufts.splice(i, 1)
+    removeArrayItemUnordered(grassTufts, tuft)
   }
+  grassTuftsByAnchor.delete(anchorKey)
 }
 
 function addBlock(x: number, y: number, z: number, id: BlockId, source: BlockSource = 'terrain') {
@@ -332,6 +358,7 @@ function addBlock(x: number, y: number, z: number, id: BlockId, source: BlockSou
   world.add(mesh)
   blocks.set(k, mesh)
   blockMeshes.push(mesh)
+  blockMutationVersion++
   blockData.set(k, id)
   registerBlockInChunk(x, y, z, id, k)
 
@@ -366,16 +393,14 @@ function removeBlock(mesh: THREE.Mesh, source: 'player' | 'system' = 'system') {
   const light = mesh.userData.light as THREE.PointLight | undefined
   if (light) {
     scene.remove(light)
-    const index = glowLights.indexOf(light)
-    if (index >= 0) glowLights.splice(index, 1)
+    removeArrayItemUnordered(glowLights, light)
   }
-  const waterIndex = waterBlocks.indexOf(mesh)
-  if (waterIndex >= 0) waterBlocks.splice(waterIndex, 1)
+  removeArrayItemUnordered(waterBlocks, mesh)
   removeGrassTuftsAt(k)
   world.remove(mesh)
   blocks.delete(k)
-  const blockMeshIndex = blockMeshes.indexOf(mesh)
-  if (blockMeshIndex >= 0) blockMeshes.splice(blockMeshIndex, 1)
+  removeArrayItemUnordered(blockMeshes, mesh)
+  blockMutationVersion++
   blockData.delete(k)
   if (id) unregisterBlockFromChunk(x, y, z, id, k)
 }
@@ -426,9 +451,13 @@ function readSavedExploration(savedExploration: SavedWorld['exploration']) {
 function clearWorldBlocks() {
   while (blockMeshes.length > 0) removeBlock(blockMeshes[blockMeshes.length - 1])
   chunks.clear()
+  grassTuftsByAnchor.clear()
   generatedTerrainChunks.clear()
   queuedTerrainChunks.clear()
   terrainGenerationQueue.length = 0
+  lastTerrainEnsureScanKey = ''
+  lastTerrainCenterKey = ''
+  pendingTerrainEnsure = null
   removedTerrainBlocks.clear()
   playerPlacedBlocks.clear()
   landmarkShardBlocks.clear()
@@ -897,6 +926,9 @@ function processTerrainQueue(limit = TERRAIN_CHUNKS_PER_FRAME) {
 function ensureTerrainChunksAround(x: number, z: number, radius = TERRAIN_LOAD_RADIUS) {
   const centerCx = chunkCoord(x)
   const centerCz = chunkCoord(z)
+  const scanKey = `${centerCx},${centerCz},${radius}`
+  if (scanKey === lastTerrainEnsureScanKey) return
+  lastTerrainEnsureScanKey = scanKey
   const pending: Array<{ cx: number; cz: number; distance: number }> = []
   for (let dx = -radius; dx <= radius; dx++) {
     for (let dz = -radius; dz <= radius; dz++) {
@@ -908,6 +940,7 @@ function ensureTerrainChunksAround(x: number, z: number, radius = TERRAIN_LOAD_R
 }
 
 function generateWorld() {
+  lastTerrainEnsureScanKey = ''
   ensureTerrainChunksAround(0, 0, INITIAL_TERRAIN_LOAD_RADIUS)
   processTerrainQueue(terrainGenerationQueue.length)
 }
@@ -1100,21 +1133,55 @@ document.addEventListener('keyup', (e) => keys.delete(e.code))
 
 const raycaster = new THREE.Raycaster()
 const raycastHits: THREE.Intersection<THREE.Object3D>[] = []
+const raycastCandidates: THREE.Mesh[] = []
 const screenCenter = new THREE.Vector2(0, 0)
 const placeNormal = new THREE.Vector3()
 const placePosition = new THREE.Vector3()
 const hitBlockPosition = new THREE.Vector3()
 const upNormal = new THREE.Vector3(0, 1, 0)
+let raycastCandidateCacheKey = ''
+
+function getRaycastCandidates() {
+  const pos = controls.object.position
+  const reach = RAYCAST_REACH + 1
+  const minCx = chunkCoord(pos.x - reach)
+  const maxCx = chunkCoord(pos.x + reach)
+  const minCy = chunkCoord(pos.y - reach)
+  const maxCy = chunkCoord(pos.y + reach)
+  const minCz = chunkCoord(pos.z - reach)
+  const maxCz = chunkCoord(pos.z + reach)
+  const cacheKey = `${minCx},${maxCx},${minCy},${maxCy},${minCz},${maxCz},${blockMutationVersion}`
+  if (cacheKey === raycastCandidateCacheKey) return raycastCandidates
+
+  raycastCandidateCacheKey = cacheKey
+  raycastCandidates.length = 0
+  for (let cx = minCx; cx <= maxCx; cx++) {
+    for (let cy = minCy; cy <= maxCy; cy++) {
+      for (let cz = minCz; cz <= maxCz; cz++) {
+        const chunk = chunks.get(chunkKey(cx, cy, cz))
+        if (!chunk) continue
+        chunk.buckets.forEach((bucket) => {
+          bucket.blockKeys.forEach((key) => {
+            const mesh = blocks.get(key)
+            if (mesh) raycastCandidates.push(mesh)
+          })
+        })
+      }
+    }
+  }
+  return raycastCandidates
+}
 
 function pickBlock() {
   raycastHits.length = 0
   raycaster.setFromCamera(screenCenter, camera)
-  return raycaster.intersectObjects(blockMeshes, false, raycastHits)[0]
+  raycaster.far = RAYCAST_REACH
+  return raycaster.intersectObjects(getRaycastCandidates(), false, raycastHits)[0]
 }
 
 function breakTargetBlock() {
   const hit = pickBlock()
-  if (!hit || hit.distance > 8) return
+  if (!hit || hit.distance > RAYCAST_REACH) return
   const mesh = hit.object as THREE.Mesh
   if (mesh.position.y > 0) {
     const blockId = mesh.userData.id as BlockId
@@ -1134,7 +1201,7 @@ function breakTargetBlock() {
 
 function placeTargetBlock() {
   const hit = pickBlock()
-  if (!hit || hit.distance > 8) return
+  if (!hit || hit.distance > RAYCAST_REACH) return
   const mesh = hit.object as THREE.Mesh
   const selectedBlock = BLOCKS[selected].id
   hitBlockPosition.copy(mesh.position).round()
@@ -1423,7 +1490,6 @@ const coldVignetteEl = document.querySelector<HTMLElement>('.cold-vignette')
 const moveDirection = new THREE.Vector3()
 const previousPosition = new THREE.Vector3()
 const movementDelta = new THREE.Vector3()
-let lastTerrainCenterKey = ''
 let fpsFrameCount = 0
 let fpsElapsed = 0
 let currentFps = 0
@@ -1590,7 +1656,7 @@ function animate() {
     p.life -= dt
     if (p.life <= 0) {
       scene.remove(p.mesh)
-      particles.splice(i, 1)
+      removeArrayItemAtUnordered(particles, i)
       continue
     }
     p.mesh.position.x += p.vx * dt
@@ -1638,8 +1704,13 @@ function animate() {
   const pos = controls.object.position
   const terrainCenterKey = terrainChunkKey(chunkCoord(pos.x), chunkCoord(pos.z))
   if (terrainCenterKey !== lastTerrainCenterKey) {
-    ensureTerrainChunksAround(pos.x, pos.z)
+    pendingTerrainEnsure = { x: pos.x, z: pos.z }
     lastTerrainCenterKey = terrainCenterKey
+  }
+  if (pendingTerrainEnsure && elapsedTime - lastTerrainEnsureAt >= TERRAIN_SCAN_INTERVAL) {
+    ensureTerrainChunksAround(pendingTerrainEnsure.x, pendingTerrainEnsure.z)
+    pendingTerrainEnsure = null
+    lastTerrainEnsureAt = elapsedTime
   }
   processTerrainQueue()
   const floor = findFloorAt(pos.x, pos.z, pos.y)
@@ -1656,10 +1727,14 @@ function animate() {
     water.position.y = (water.userData.baseY as number) + Math.sin(phase) * 0.035
     water.scale.y = 0.92 + Math.sin(phase * 1.3) * 0.035
   }
-  for (let i = 0; i < grassTufts.length; i++) {
-    const tuft = grassTufts[i]
+  const grassCount = grassTufts.length
+  const grassUpdates = Math.min(grassCount, GRASS_ANIMATION_BUDGET)
+  if (grassAnimationCursor >= grassCount) grassAnimationCursor = 0
+  for (let i = 0; i < grassUpdates; i++) {
+    const tuft = grassTufts[grassAnimationCursor]
     const seed = tuft.userData.seed as number
     tuft.rotation.z = Math.sin(elapsedTime * 1.35 + seed) * 0.06
+    grassAnimationCursor = (grassAnimationCursor + 1) % grassCount
   }
   clouds.rotation.y += dt * 0.006
   for (let i = 0; i < clouds.children.length; i++) {
