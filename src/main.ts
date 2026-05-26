@@ -6,7 +6,7 @@ import { animateBlockMaterials, createBlockMaterials } from './textures'
 import { blockKey, terrainNoise } from './worldMath'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
-const GAME_VERSION_LABEL = 'v0.4 Render Smoothness'
+const GAME_VERSION_LABEL = 'v0.5 Instanced Rendering'
 const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0
 const isSmallScreen = Math.min(window.innerWidth, window.innerHeight) <= 760
 const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -88,7 +88,7 @@ app.innerHTML = `
       </div>
     </div>
     <div class="rotate-prompt"><div><span>↻</span><strong>请横屏游玩</strong><small>Rotate your phone to landscape</small></div></div>
-    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v0.4</h2><p>Render Smoothness - adaptive visuals for steadier frames</p><button>Start Exploring</button></div></div>
+    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v0.5</h2><p>Instanced Rendering - block batches for steadier frames</p><button>Start Exploring</button></div></div>
   </div>
 `
 
@@ -139,10 +139,26 @@ const materials = createBlockMaterials()
 
 const world = new THREE.Group()
 scene.add(world)
-const blocks = new Map<string, THREE.Mesh>()
-const blockMeshes: THREE.Mesh[] = []
+type InstancedBlockRef = {
+  kind: 'instanced'
+  id: BlockId
+  mesh: THREE.InstancedMesh
+  index: number
+  x: number
+  y: number
+  z: number
+}
+type BlockVisual = THREE.Mesh | InstancedBlockRef
+const blocks = new Map<string, BlockVisual>()
 const blockData = new Map<string, BlockId>()
+const INITIAL_INSTANCED_MESH_CAPACITY = 15000
+const instancedBlockMeshes = new Map<BlockId, THREE.InstancedMesh>()
+const instancedBlockKeys = new Map<BlockId, string[]>()
+const instancedBlockCapacities = new Map<BlockId, number>()
+const instancedMatrix = new THREE.Matrix4()
+const hiddenInstanceMatrix = new THREE.Matrix4().makeTranslation(0, -100000, 0)
 const glowLights: THREE.PointLight[] = []
+const glowLightsByBlock = new Map<string, THREE.PointLight>()
 const waterBlocks: THREE.Mesh[] = []
 const grassTufts: THREE.Group[] = []
 const grassTuftsByAnchor = new Map<string, THREE.Group[]>()
@@ -248,6 +264,109 @@ function removeArrayItemAtUnordered<T>(array: T[], index: number) {
 function removeArrayItemUnordered<T>(array: T[], item: T) {
   const index = array.indexOf(item)
   if (index >= 0) removeArrayItemAtUnordered(array, index)
+}
+
+BLOCKS.forEach(({ id }) => {
+  if (id === 'water') return
+  const instancedMesh = new THREE.InstancedMesh(cubeGeometry, materials.get(id)!, INITIAL_INSTANCED_MESH_CAPACITY)
+  instancedMesh.count = 0
+  instancedMesh.castShadow = enableBlockShadows && (id === 'wood' || id === 'leaves' || id === 'crystal' || id === 'glow')
+  instancedMesh.receiveShadow = enableBlockShadows
+  instancedMesh.frustumCulled = false
+  instancedMesh.userData.block = true
+  instancedMesh.userData.id = id
+  instancedBlockMeshes.set(id, instancedMesh)
+  instancedBlockKeys.set(id, [])
+  instancedBlockCapacities.set(id, INITIAL_INSTANCED_MESH_CAPACITY)
+  world.add(instancedMesh)
+})
+
+function isInstancedBlockRef(visual: BlockVisual | undefined): visual is InstancedBlockRef {
+  return Boolean(visual && !(visual instanceof THREE.Mesh) && visual.kind === 'instanced')
+}
+
+function addInstancedBlockVisual(k: string, x: number, y: number, z: number, id: BlockId) {
+  let instancedMesh = instancedBlockMeshes.get(id)
+  const keysForType = instancedBlockKeys.get(id)
+  if (!instancedMesh || !keysForType) return undefined
+  if (instancedMesh.count >= (instancedBlockCapacities.get(id) ?? INITIAL_INSTANCED_MESH_CAPACITY)) {
+    instancedMesh = growInstancedBlockMesh(id, instancedMesh, keysForType)
+  }
+
+  const index = instancedMesh.count
+  instancedMatrix.makeTranslation(x, y, z)
+  instancedMesh.setMatrixAt(index, instancedMatrix)
+  instancedMesh.count = index + 1
+  instancedMesh.instanceMatrix.needsUpdate = true
+  instancedMesh.boundingSphere = null
+  keysForType[index] = k
+  return { kind: 'instanced', id, mesh: instancedMesh, index, x, y, z } satisfies InstancedBlockRef
+}
+
+function growInstancedBlockMesh(id: BlockId, oldMesh: THREE.InstancedMesh, keysForType: string[]) {
+  const oldCapacity = instancedBlockCapacities.get(id) ?? INITIAL_INSTANCED_MESH_CAPACITY
+  const newCapacity = oldCapacity * 2
+  const newMesh = new THREE.InstancedMesh(cubeGeometry, oldMesh.material, newCapacity)
+  newMesh.count = oldMesh.count
+  newMesh.castShadow = oldMesh.castShadow
+  newMesh.receiveShadow = oldMesh.receiveShadow
+  newMesh.frustumCulled = false
+  newMesh.userData.block = true
+  newMesh.userData.id = id
+
+  for (let index = 0; index < oldMesh.count; index++) {
+    oldMesh.getMatrixAt(index, instancedMatrix)
+    newMesh.setMatrixAt(index, instancedMatrix)
+  }
+  newMesh.instanceMatrix.needsUpdate = true
+
+  world.remove(oldMesh)
+  world.add(newMesh)
+  instancedBlockMeshes.set(id, newMesh)
+  instancedBlockCapacities.set(id, newCapacity)
+  keysForType.forEach((key) => {
+    const ref = blocks.get(key)
+    if (isInstancedBlockRef(ref)) ref.mesh = newMesh
+  })
+  return newMesh
+}
+
+function removeInstancedBlockVisual(k: string, ref: InstancedBlockRef) {
+  const keysForType = instancedBlockKeys.get(ref.id)
+  if (!keysForType) return
+
+  const lastIndex = ref.mesh.count - 1
+  const removedIndex = ref.index
+  const movedKey = keysForType[lastIndex]
+  if (removedIndex !== lastIndex && movedKey) {
+    ref.mesh.getMatrixAt(lastIndex, instancedMatrix)
+    ref.mesh.setMatrixAt(removedIndex, instancedMatrix)
+    keysForType[removedIndex] = movedKey
+    const movedRef = blocks.get(movedKey)
+    if (isInstancedBlockRef(movedRef)) movedRef.index = removedIndex
+  }
+
+  ref.mesh.setMatrixAt(lastIndex, hiddenInstanceMatrix)
+  ref.mesh.count = Math.max(0, lastIndex)
+  keysForType.pop()
+  ref.mesh.instanceMatrix.needsUpdate = true
+  ref.mesh.boundingSphere = null
+}
+
+function getBlockKeyFromHit(hit: THREE.Intersection<THREE.Object3D>) {
+  if (hit.object instanceof THREE.InstancedMesh) {
+    const id = hit.object.userData.id as BlockId | undefined
+    const instanceId = hit.instanceId
+    if (!id || instanceId === undefined) return undefined
+    return instancedBlockKeys.get(id)?.[instanceId]
+  }
+  const p = hit.object.position
+  return blockKey(Math.round(p.x), Math.round(p.y), Math.round(p.z))
+}
+
+function getBlockPositionFromKey(key: string, target: THREE.Vector3) {
+  const [x, y, z] = key.split(',').map(Number)
+  return target.set(x, y, z)
 }
 
 function chunkCoord(value: number) {
@@ -357,25 +476,30 @@ function addBlock(x: number, y: number, z: number, id: BlockId, source: BlockSou
     removedTerrainBlocks.delete(k)
     playerPlacedBlocks.add(k)
   }
-  const mesh = new THREE.Mesh(cubeGeometry, materials.get(id)!)
-  mesh.position.set(x, y, z)
-  mesh.castShadow = enableBlockShadows && (id === 'wood' || id === 'leaves' || id === 'crystal' || id === 'glow')
-  mesh.receiveShadow = enableBlockShadows
-  mesh.userData.block = true
-  mesh.userData.id = id
-  world.add(mesh)
-  blocks.set(k, mesh)
-  blockMeshes.push(mesh)
+  let visual: BlockVisual | undefined
+  if (id === 'water') {
+    const mesh = new THREE.Mesh(cubeGeometry, materials.get(id)!)
+    mesh.position.set(x, y, z)
+    mesh.castShadow = false
+    mesh.receiveShadow = enableBlockShadows
+    mesh.userData.block = true
+    mesh.userData.id = id
+    mesh.userData.baseY = y
+    world.add(mesh)
+    waterBlocks.push(mesh)
+    visual = mesh
+  } else {
+    visual = addInstancedBlockVisual(k, x, y, z, id)
+  }
+  if (!visual) return
+  blocks.set(k, visual)
   blockMutationVersion++
   blockData.set(k, id)
   registerBlockInChunk(x, y, z, id, k)
 
-  if (enableBlockOutlines && outlinedBlockIds.has(id)) {
+  if (visual instanceof THREE.Mesh && enableBlockOutlines && outlinedBlockIds.has(id)) {
     const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial)
-    mesh.add(edges)
-  } else if (id === 'water') {
-    mesh.userData.baseY = y
-    waterBlocks.push(mesh)
+    visual.add(edges)
   }
 
   if ((id === 'glow' || id === 'crystal') && glowLights.length < MAX_GLOW_LIGHTS) {
@@ -386,35 +510,43 @@ function addBlock(x: number, y: number, z: number, id: BlockId, source: BlockSou
     )
     light.position.set(x, y + 0.2, z)
     scene.add(light)
-    mesh.userData.light = light
+    if (visual instanceof THREE.Mesh) visual.userData.light = light
+    glowLightsByBlock.set(k, light)
     glowLights.push(light)
   }
 }
 
-function removeBlock(mesh: THREE.Mesh, source: 'player' | 'system' = 'system') {
-  const p = mesh.position
-  const x = Math.round(p.x)
-  const y = Math.round(p.y)
-  const z = Math.round(p.z)
-  const k = blockKey(x, y, z)
+function removeBlockAtKey(k: string, source: 'player' | 'system' = 'system') {
+  const visual = blocks.get(k)
+  if (!visual) return
+  const [x, y, z] = k.split(',').map(Number)
   if (source === 'player') {
     if (playerPlacedBlocks.has(k)) playerPlacedBlocks.delete(k)
     else removedTerrainBlocks.add(k)
   }
-  const id = blockData.get(k) ?? (mesh.userData.id as BlockId | undefined)
-  const light = mesh.userData.light as THREE.PointLight | undefined
+  const id = blockData.get(k) ?? (isInstancedBlockRef(visual) ? visual.id : visual.userData.id as BlockId | undefined)
+  const light = glowLightsByBlock.get(k) ?? (visual instanceof THREE.Mesh ? visual.userData.light as THREE.PointLight | undefined : undefined)
   if (light) {
     scene.remove(light)
     removeArrayItemUnordered(glowLights, light)
+    glowLightsByBlock.delete(k)
   }
-  removeArrayItemUnordered(waterBlocks, mesh)
+  if (visual instanceof THREE.Mesh) {
+    removeArrayItemUnordered(waterBlocks, visual)
+    world.remove(visual)
+  } else {
+    removeInstancedBlockVisual(k, visual)
+  }
   removeGrassTuftsAt(k)
-  world.remove(mesh)
   blocks.delete(k)
-  removeArrayItemUnordered(blockMeshes, mesh)
   blockMutationVersion++
   blockData.delete(k)
   if (id) unregisterBlockFromChunk(x, y, z, id, k)
+}
+
+function removeBlock(mesh: THREE.Mesh, source: 'player' | 'system' = 'system') {
+  const p = mesh.position
+  removeBlockAtKey(blockKey(Math.round(p.x), Math.round(p.y), Math.round(p.z)), source)
 }
 
 function setStarterInventory() {
@@ -461,7 +593,16 @@ function readSavedExploration(savedExploration: SavedWorld['exploration']) {
 }
 
 function clearWorldBlocks() {
-  while (blockMeshes.length > 0) removeBlock(blockMeshes[blockMeshes.length - 1])
+  const keysToRemove = [...blockData.keys()]
+  keysToRemove.forEach((key) => removeBlockAtKey(key))
+  instancedBlockMeshes.forEach((mesh) => {
+    mesh.count = 0
+    mesh.instanceMatrix.needsUpdate = true
+    mesh.boundingSphere = null
+  })
+  instancedBlockKeys.forEach((keysForType) => { keysForType.length = 0 })
+  waterBlocks.length = 0
+  glowLightsByBlock.clear()
   chunks.clear()
   grassTuftsByAnchor.clear()
   generatedTerrainChunks.clear()
@@ -1145,7 +1286,8 @@ document.addEventListener('keyup', (e) => keys.delete(e.code))
 
 const raycaster = new THREE.Raycaster()
 const raycastHits: THREE.Intersection<THREE.Object3D>[] = []
-const raycastCandidates: THREE.Mesh[] = []
+const raycastCandidates: THREE.Object3D[] = []
+const raycastCandidateIds = new Set<string>()
 const screenCenter = new THREE.Vector2(0, 0)
 const placeNormal = new THREE.Vector3()
 const placePosition = new THREE.Vector3()
@@ -1167,16 +1309,25 @@ function getRaycastCandidates() {
 
   raycastCandidateCacheKey = cacheKey
   raycastCandidates.length = 0
+  raycastCandidateIds.clear()
   for (let cx = minCx; cx <= maxCx; cx++) {
     for (let cy = minCy; cy <= maxCy; cy++) {
       for (let cz = minCz; cz <= maxCz; cz++) {
         const chunk = chunks.get(chunkKey(cx, cy, cz))
         if (!chunk) continue
         chunk.buckets.forEach((bucket) => {
-          bucket.blockKeys.forEach((key) => {
-            const mesh = blocks.get(key)
-            if (mesh) raycastCandidates.push(mesh)
-          })
+          if (bucket.id === 'water') {
+            bucket.blockKeys.forEach((key) => {
+              const visual = blocks.get(key)
+              if (visual instanceof THREE.Mesh) raycastCandidates.push(visual)
+            })
+            return
+          }
+          const mesh = instancedBlockMeshes.get(bucket.id)
+          if (mesh && mesh.count > 0 && !raycastCandidateIds.has(bucket.id)) {
+            raycastCandidateIds.add(bucket.id)
+            raycastCandidates.push(mesh)
+          }
         })
       }
     }
@@ -1194,16 +1345,18 @@ function pickBlock() {
 function breakTargetBlock() {
   const hit = pickBlock()
   if (!hit || hit.distance > RAYCAST_REACH) return
-  const mesh = hit.object as THREE.Mesh
-  if (mesh.position.y > 0) {
-    const blockId = mesh.userData.id as BlockId
-    const minedKey = blockKey(Math.round(mesh.position.x), Math.round(mesh.position.y), Math.round(mesh.position.z))
+  const minedKey = getBlockKeyFromHit(hit)
+  if (!minedKey) return
+  const blockId = blockData.get(minedKey)
+  if (!blockId) return
+  getBlockPositionFromKey(minedKey, hitBlockPosition)
+  if (hitBlockPosition.y > 0) {
     const canAbsorbCharge = !playerPlacedBlocks.has(minedKey)
     // 破坏粒子
-    createBreakParticles(mesh.position, blockId)
+    createBreakParticles(hitBlockPosition, blockId)
     // 简单音效反馈（可选：用 Web Audio API）
     playSound('break', 0.3)
-    removeBlock(mesh, 'player')
+    removeBlockAtKey(minedKey, 'player')
     addToInventory(blockId)
     const collectedShard = collectExplorationShard(minedKey, blockId)
     if (canAbsorbCharge) absorbCrystalPower(blockId, !collectedShard)
@@ -1214,10 +1367,10 @@ function breakTargetBlock() {
 function placeTargetBlock() {
   const hit = pickBlock()
   if (!hit || hit.distance > RAYCAST_REACH) return
-  const mesh = hit.object as THREE.Mesh
+  const hitKey = getBlockKeyFromHit(hit)
+  if (!hitKey) return
   const selectedBlock = BLOCKS[selected].id
-  hitBlockPosition.copy(mesh.position).round()
-  const hitKey = blockKey(hitBlockPosition.x, hitBlockPosition.y, hitBlockPosition.z)
+  getBlockPositionFromKey(hitKey, hitBlockPosition)
   const hitBlockId = blockData.get(hitKey)
   const canReplaceWater = hitBlockId === 'water' && selectedBlock !== 'water'
 
@@ -1229,15 +1382,15 @@ function placeTargetBlock() {
   if (canReplaceWater) {
     if (wouldTrapPlayer(hitBlockPosition)) return
     playSound('place', 0.25)
-    removeBlock(mesh)
+    removeBlockAtKey(hitKey)
     addBlock(hitBlockPosition.x, hitBlockPosition.y, hitBlockPosition.z, selectedBlock, 'player')
     consumeInventory(selectedBlock)
     updateHotbar()
     return
   }
 
-  placeNormal.copy(hit.face?.normal ?? upNormal).transformDirection(mesh.matrixWorld)
-  placePosition.copy(mesh.position).add(placeNormal).round()
+  placeNormal.copy(hit.face?.normal ?? upNormal).transformDirection(hit.object.matrixWorld)
+  placePosition.copy(hitBlockPosition).add(placeNormal).round()
   const key = blockKey(placePosition.x, placePosition.y, placePosition.z)
   if (!blocks.has(key) && !wouldTrapPlayer(placePosition)) {
     playSound('place', 0.25)
@@ -1643,7 +1796,7 @@ function updateFrameStats(dt: number) {
     fpsEl.style.color = currentFps >= 55 ? '#a8ffb9' : currentFps >= 30 ? '#fff3a8' : '#ffd7fa'
   }
   if (blocksEl) {
-    blocksEl.textContent = String(blockMeshes.length)
+    blocksEl.textContent = String(blocks.size)
   }
   if (chunksEl) {
     chunksEl.textContent = String(chunks.size)

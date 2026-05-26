@@ -322,3 +322,50 @@ Run npm run build before finishing.
 - **潜在风险点与建议检查**:
   - **性能监控 (Perf Badge)**: 建议在各种低端 Android 模拟器或实机上观察 `.perf-badge` 中的帧率（FPS）。若禁用 shadows/outlines 后仍有抖动，建议考虑将 `TERRAIN_MAX_RADIUS` 从 6 动态降低到 4 或 3。
   - **视口遮挡风险**: 极窄屏幕或折叠屏手机上，`.save-tools` 与 `.survival-badge` 仍然有重叠风险。在 v0.5 版本中建议引入汉堡折叠菜单，把存档工具收纳起来。
+
+## QA Feedback & Architecture Review (v0.5) [三弟 Architecture Review]
+
+### 1. InstancedMesh Refactor Goal & Overview
+- The v0.5 goal is to transition block rendering from individual `THREE.Mesh` instances to `THREE.InstancedMesh` grouped per block type (or per chunk per block type) to optimize Draw Calls.
+- Below is the detailed risk assessment, recommendations, and analysis of the current half-finished implementation in `src/main.ts`.
+
+### 2. Current Implementation State & Build Failures (TypeScript Analysis)
+- **Status**: There are active, uncommitted changes in `src/main.ts` that attempt to introduce `InstancedBlockRef` and a `BlockVisual` union type, but these changes are incomplete and break the project build (producing 7 TypeScript errors during `npm run build`).
+- **Core Issues Identified in the Draft**:
+  1. **Missing `blockMeshes`**: The draft code completely deleted the `blockMeshes: THREE.Mesh[]` array, causing compile errors in `addBlock` (line 383), `removeBlock` (line 429), `clearWorldBlocks` (line 479), and `updateFrameStats` (line 1661) where the codebase still expects to loop or query this array.
+  2. **Raycasting Type Discrepancies**: In `getRaycastCandidates` (line 1193), the code attempts to push `mesh` (typed as `BlockVisual = THREE.Mesh | InstancedBlockRef`) to `raycastCandidates: THREE.Mesh[]`. Because `InstancedBlockRef` is not a `THREE.Mesh`, the compiler rejects this.
+  3. **Point Light Decoupling Draft**: The draft introduces `glowLightsByBlock = new Map<string, PointLight>()`, which matches our recommended direction for point light decoupling, but this is not yet integrated into `addBlock`/`removeBlock`.
+
+### 3. Save/Load Compatibility (Low Risk)
+- **Verdict**: Save/load logic will survive the refactor, as the serialization (`serializeWorld`) and deserialization (`applySavedWorld`) rely entirely on logical data structures (`blockData` coordinate-to-id map, `removedTerrainBlocks`, `playerPlacedBlocks`, and `inventoryCounts`) rather than the WebGL `THREE.Mesh` references.
+- **Refactor Impact**:
+  - The implementation of `addBlock()`, `removeBlock()`, and `clearWorldBlocks()` must be updated to rebuild or clear the corresponding `InstancedMesh` instances rather than instantiating/destroying individual `THREE.Mesh` objects.
+
+### 4. Raycasting, Placing, and Breaking Blocks (Medium Risk)
+- **Verdict**: Raycasting will function, but the coordinate calculations must be rewritten.
+- **Raycast Hits**: Three.js supports raycasting on `THREE.InstancedMesh` natively, providing the index of the hit instance as `instanceId` in the intersection result.
+- **Broken Logic**:
+  - Currently, `pickBlock()` returns the intersected object, and placing/breaking logic reads its coordinates directly from `mesh.position`.
+  - With `InstancedMesh`, `hit.object` is the instanced container (typically at `(0,0,0)`), meaning `mesh.position` will return the origin rather than the specific block's position.
+- **Refactor Action**:
+  - The developer must query the hit instance's local matrix using `instancedMesh.getMatrixAt(instanceId, tempMatrix)`, extract the instance position via `tempPosition.setFromMatrixPosition(tempMatrix)`, and round these coordinates (`Math.round`) to obtain the correct grid coordinate key `(x, y, z)` for placement/destruction.
+
+### 5. Block Outlines & Shadows (High/Medium Risk)
+- **Outlines (High Risk - Blocked)**:
+  - Currently, outlines are implemented as child line segments (`THREE.LineSegments`) added directly to each individual mesh (`mesh.add(edges)`).
+  - Since `InstancedMesh` instances are not `THREE.Object3D` nodes, child nodes cannot be added to them. The current approach will fail completely.
+  - *Recommendation*: Deprecate the per-block outlines (which was flagged as a performance bottleneck in v0.4) and replace it with a single hovered-block highlight box that follows the raycast pointer, matching standard voxel game UX.
+- **Shadows (Low Risk)**:
+  - `THREE.InstancedMesh` supports `castShadow` and `receiveShadow` at the mesh level.
+  - Shadow configuration can be set once on the `InstancedMesh` for casting/receiving block types (e.g. `wood`, `leaves`, `crystal`, `glow`), keeping others off.
+
+### 6. Hidden Coupling Points (Medium Risk)
+- **Water Block Animations**:
+  - Currently, water blocks are animated in `animate()` by directly changing `position.y` and `scale.y` per mesh. Instanced meshes cannot have individual instance properties animated dynamically without expensive CPU-to-GPU matrix updates.
+  - *Recommendation*: Keep water blocks as separate `THREE.Mesh` instances (due to their low count and surface-only placement), or transition water animations to a custom vertex shader driven by a time uniform.
+- **Glow & Crystal Point Lights**:
+  - Point lights are currently stored directly on the block mesh via `mesh.userData.light` for cleanup.
+  - Without individual mesh instances, this reference point is lost.
+  - *Recommendation*: Decouple lights from meshes by storing them in a coordinate-keyed map: `activeGlowLights = new Map<string, THREE.PointLight>()` (as drafted by the `glowLightsByBlock` map).
+- **Chunk Rebuilding**:
+  - The existing codebase already has a chunk bucket structure (`chunks` mapping `ChunkMetadata` to block ID lists) and a `dirtyChunkKeys` set. This is ideal for chunk-based `InstancedMesh` management, where the instanced meshes of a chunk are rebuilt whenever the chunk is flagged dirty.
