@@ -1079,6 +1079,19 @@ const breakParticleGeometry = new THREE.BoxGeometry(0.15, 0.15, 0.15)
 const breakParticleMaterials = new Map<BlockId, THREE.MeshStandardMaterial>()
 const breakParticleOffset = new THREE.Vector3()
 
+// 放置预览 ghost box
+const previewGeometry = new THREE.BoxGeometry(1, 1, 1)
+const previewMaterial = new THREE.MeshStandardMaterial({
+  color: 0x88ddff,
+  metalness: 0.2,
+  roughness: 0.8,
+  transparent: true,
+  opacity: 0.35,
+  emissive: 0x4488ff,
+  emissiveIntensity: 0.2,
+})
+let previewMesh: THREE.Mesh | null = null
+
 function getBreakParticleMaterial(blockId: BlockId) {
   let material = breakParticleMaterials.get(blockId)
   if (!material) {
@@ -1103,9 +1116,32 @@ function createBreakParticles(position: THREE.Vector3, blockId: BlockId) {
       vx: (Math.random() - 0.5) * 5.5,
       vy: 1.5 + Math.random() * 3.5,
       vz: (Math.random() - 0.5) * 5.5,
-      life: 0.6,
+      life: cosmeticEffectsReduced ? 0.5 : 0.8,
     })
   }
+  // Camera shake feedback on break
+  const shakeStrength = 0.08
+  const originalPos = new THREE.Vector3().copy(camera.position)
+  const shakeStart = Date.now()
+  const shakeDuration = 100
+  const shakeFrame = () => {
+    const elapsed = Date.now() - shakeStart
+    if (elapsed >= shakeDuration) {
+      camera.position.copy(originalPos)
+      return
+    }
+    const progress = elapsed / shakeDuration
+    const falloff = 1 - progress * progress
+    camera.position.copy(originalPos).add(
+      new THREE.Vector3(
+        (Math.random() - 0.5) * shakeStrength * falloff,
+        (Math.random() - 0.5) * shakeStrength * falloff,
+        (Math.random() - 0.5) * shakeStrength * falloff
+      )
+    )
+    requestAnimationFrame(shakeFrame)
+  }
+  shakeFrame()
 }
 
 // 简单音效 (Web Audio API)
@@ -1524,6 +1560,15 @@ function breakTargetBlock() {
     createBreakParticles(hitBlockPosition, blockId)
     // 简单音效反馈（可选：用 Web Audio API）
     playSound('break', 0.3)
+    // Crosshair flash on break hit
+    const crosshair = document.querySelector<HTMLDivElement>('.crosshair')!
+    if (crosshair) {
+      const originalFilter = crosshair.style.filter
+      crosshair.style.filter = 'drop-shadow(0 0 20px rgba(255,255,255,1)) brightness(1.8)'
+      setTimeout(() => {
+        crosshair.style.filter = originalFilter
+      }, 80)
+    }
     removeBlockAtKey(minedKey, 'player')
     addToInventory(blockId)
     const collectedShard = collectExplorationShard(minedKey, blockId)
@@ -2028,6 +2073,40 @@ function animate() {
     p.mesh.rotation.x += dt * 2
     p.mesh.rotation.y += dt * 1.5
     p.mesh.scale.setScalar(Math.max(0, p.life / 0.6))
+  }
+
+  // 更新放置预览 ghost box
+  const hit = pickBlock()
+  if (hit && hit.distance <= RAYCAST_REACH && countBlocksInInventory(BLOCKS[selected].id) > 0) {
+    getBlockPositionFromKey(hit.key, hitBlockPosition)
+    const hitBlockId = blockData.get(hit.key)
+    const canReplaceWater = hitBlockId === 'water' && BLOCKS[selected].id !== 'water'
+    
+    if (canReplaceWater) {
+      placePosition.copy(hitBlockPosition)
+    } else {
+      placeNormal.copy(hit.normal.lengthSq() > 0 ? hit.normal : upNormal)
+      placePosition.copy(hitBlockPosition).add(placeNormal).round()
+    }
+    
+    const key = blockKey(placePosition.x, placePosition.y, placePosition.z)
+    const isValidPlacement = !blocks.has(key) && !wouldTrapPlayer(placePosition)
+    
+    if (!previewMesh) {
+      previewMesh = new THREE.Mesh(previewGeometry, previewMaterial)
+      previewMesh.castShadow = false
+      previewMesh.receiveShadow = false
+      scene.add(previewMesh)
+    }
+    previewMesh.position.copy(placePosition).add(new THREE.Vector3(0.5, 0.5, 0.5))
+    const material = previewMesh.material as THREE.MeshStandardMaterial
+    material.opacity = isValidPlacement ? 0.35 : 0.55
+    material.emissive.setHex(isValidPlacement ? 0x4488ff : 0xff6666)
+    previewMesh.visible = true
+  } else {
+    if (previewMesh) {
+      previewMesh.visible = false
+    }
   }
 
   const t = elapsedTime * 0.055
