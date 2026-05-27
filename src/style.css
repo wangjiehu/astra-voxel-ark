@@ -5,7 +5,7 @@ button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent
 .hud { position: fixed; inset: 0; z-index: 1; pointer-events: none; color: white; text-shadow: 0 2px 12px rgba(0,0,0,.45); }
 .hud::before { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 50% 38%, transparent 0 36%, rgba(7,12,28,.2) 68%, rgba(3,5,14,.52) 100%); mix-blend-mode: multiply; }
 .hud::after { content: ""; position: absolute; inset: 0; background: linear-gradient(120deg, rgba(255,255,255,.1), transparent 28%, transparent 72%, rgba(121,213,255,.12)); opacity: .68; }
-.title, .help, .world-badge, .survival-badge, .save-tools, .toast, .hotbar, .crosshair, .start, .mobile-controls, .rotate-prompt, .tutorial, .block-info, .mine-progress { z-index: 2; }
+.title, .help, .world-badge, .wayfinder-badge, .survival-badge, .save-tools, .toast, .hotbar, .crosshair, .start, .mobile-controls, .rotate-prompt, .tutorial, .block-info, .mine-progress { z-index: 2; }
 .cold-vignette { position: absolute; inset: 0; z-index: 1; pointer-events: none; opacity: 0; transition: opacity .45s ease; background: radial-gradient(circle at 50% 42%, transparent 0 28%, rgba(77, 183, 255, .12) 58%, rgba(7, 16, 36, .78) 100%), linear-gradient(180deg, rgba(160, 225, 255, .08), rgba(10, 18, 44, .36)); box-shadow: inset 0 0 110px rgba(122, 213, 255, .3); mix-blend-mode: screen; }
 .title { position: absolute; left: 24px; top: 20px; padding: 14px 18px; border: 1px solid rgba(255,255,255,.22); background: linear-gradient(135deg, rgba(10,18,40,.58), rgba(24,47,77,.28)); backdrop-filter: blur(18px); border-radius: 20px; box-shadow: 0 20px 70px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.18); }
 .eyebrow { display: block; margin-bottom: 4px; font-size: 10px; font-weight: 800; letter-spacing: .22em; color: #a7eaff; opacity: .9; }
@@ -26,6 +26,9 @@ button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent
 .help strong { color: #c7f2ff; letter-spacing: .08em; }
 .mobile-help { display: none; }
 .world-badge { position: absolute; right: 24px; bottom: 112px; padding: 9px 13px; border-radius: 999px; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.2); backdrop-filter: blur(16px); font-size: 12px; color: rgba(255,255,255,.88); }
+.wayfinder-badge { position: absolute; left: 24px; top: 402px; min-width: 220px; padding: 10px 14px; border-radius: 999px; background: linear-gradient(135deg, rgba(9,14,31,.66), rgba(35,60,86,.42)); border: 1px solid rgba(169,239,255,.28); backdrop-filter: blur(18px); box-shadow: 0 16px 44px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.14); display: flex; align-items: center; justify-content: space-between; gap: 14px; font-size: 12px; }
+.wayfinder-label { color: #c7f2ff; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+.wayfinder-value { color: #fff3a8; font-weight: 900; font-family: monospace; white-space: nowrap; }
 .perf-badge { position: absolute; right: 24px; bottom: 152px; padding: 8px 12px; border-radius: 999px; background: rgba(9, 14, 31, 0.58); border: 1px solid rgba(255, 255, 255, 0.16); backdrop-filter: blur(18px); font-size: 11px; font-family: monospace; color: rgba(255, 255, 255, 0.85); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24); pointer-events: none; display: flex; align-items: center; gap: 8px; }
 .perf-badge span { font-weight: 700; }
 .perf-metric { display: flex; align-items: center; gap: 4px; }
@@ -180,7 +183,7 @@ body.portrait-touch .mobile-controls, body.portrait-touch .hotbar { display: non
 .hidden { display: none; }
 
 @media (pointer: coarse), (max-width: 760px) {
-  .title, .help, .world-badge, .save-tools, .survival-badge, .tutorial, .perf-badge, .block-info, .hotbar, .joystick, .touch-btn, .panel, .toast, .mine-ring::after {
+  .title, .help, .world-badge, .wayfinder-badge, .save-tools, .survival-badge, .tutorial, .perf-badge, .block-info, .hotbar, .joystick, .touch-btn, .panel, .toast, .mine-ring::after {
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
   }
@@ -191,6 +194,7 @@ body.portrait-touch .mobile-controls, body.portrait-touch .hotbar { display: non
   .help { display: none; right: calc(12px + env(safe-area-inset-right)); top: 54px; max-width: 188px; padding: 10px 12px; font-size: 11px; line-height: 1.45; border-radius: 16px; z-index: 10; background: rgba(9, 15, 34, 0.92) !important; }
   .help.visible-mobile { display: block !important; }
   .world-badge { right: calc(12px + env(safe-area-inset-right)); bottom: 84px; font-size: 10px; }
+  .wayfinder-badge { left: calc(12px + env(safe-area-inset-left)); top: 102px; min-width: 0; width: min(238px, calc(100vw - 72px - env(safe-area-inset-left) - env(safe-area-inset-right))); padding: 8px 12px; border-radius: 14px; font-size: 10px; background: rgba(9, 14, 31, 0.92) !important; }
   .save-tools { left: calc(12px + env(safe-area-inset-left)); top: 132px; bottom: auto; gap: 5px; padding: 6px; background: rgba(9, 14, 31, 0.92) !important; }
   .save-tools button { padding: 7px 9px; font-size: 10px; }
   .survival-badge {
@@ -259,6 +263,13 @@ body.portrait-touch .mobile-controls, body.portrait-touch .hotbar { display: non
     padding: 5px;
     transform: scale(.84);
     transform-origin: top left;
+  }
+  .wayfinder-badge {
+    left: clamp(calc(142px + env(safe-area-inset-left)), 28vw, calc(175px + env(safe-area-inset-left)));
+    top: 50px;
+    width: min(320px, calc(100vw - 300px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+    height: 34px;
+    padding: 0 12px;
   }
 
   /* v1.3 Survival Diagnostics Compact Horizontal HUD for Mobile Landscape */

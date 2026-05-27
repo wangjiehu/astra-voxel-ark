@@ -6,7 +6,7 @@ import { animateBlockMaterials, createBlockMaterials } from './textures'
 import { blockKey, terrainNoise } from './worldMath'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
-const GAME_VERSION_LABEL = 'v1.3.2 Interaction Polish'
+const GAME_VERSION_LABEL = 'v1.3.3 Wayfinder Polish'
 const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0
 const isSmallScreen = Math.min(window.innerWidth, window.innerHeight) <= 760
 const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -18,6 +18,10 @@ app.innerHTML = `
     <div class="help"><strong>Controls</strong><br/><span class="desktop-help">WASD move · Space jump<br/>Mouse look · Left break · Right place<br/>1-18 select block · Click to enter<br/>Goal: find 6 landmark shards</span><span class="mobile-help">Left joystick: move · Drag right: look<br/>Tap right side: place · Hold right side: break<br/>Goal: find landmark shards</span></div>
     <div class="world-badge"><span class="badge-pulse"></span>${GAME_VERSION_LABEL}</div>
 
+    <div class="wayfinder-badge">
+      <span class="wayfinder-label">Shard Signal</span>
+      <span class="wayfinder-value">Scanning</span>
+    </div>
     <div class="survival-badge">
       <div class="survival-title">SURVIVAL DIAGNOSTICS</div>
       <div class="survival-status">
@@ -75,7 +79,7 @@ app.innerHTML = `
     </div>
     <div class="toast" aria-live="polite"></div>
     <div class="cold-vignette"></div>
-    <div class="mine-progress"><div class="mine-ring"></div><span>Mining</span></div>
+    <div class="mine-progress"><div class="mine-ring"></div><span>Hold</span></div>
     <div class="crosshair"></div>
     <div class="hotbar"></div>
     <div class="block-info"><div class="block-name"></div><div class="block-count">0</div></div>
@@ -88,7 +92,7 @@ app.innerHTML = `
       </div>
     </div>
     <div class="rotate-prompt"><div><span>↻</span><strong>请横屏游玩</strong><small>Rotate your phone to landscape</small></div></div>
-    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v1.3.2</h2><p>Interaction polish - cleaner block preview, feedback, and inventory flow</p><button>Start Exploring</button></div></div>
+    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v1.3.3</h2><p>Wayfinder polish - clearer shard goals, placement feedback, and mobile flow</p><button>Start Exploring</button></div></div>
   </div>
 `
 
@@ -1145,8 +1149,18 @@ function createBreakParticles(position: THREE.Vector3, blockId: BlockId) {
 }
 
 // 简单音效 (Web Audio API)
-const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+let audioContext: AudioContext | null = null
+function getAudioContext() {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+  }
+  if (audioContext.state === 'suspended') {
+    void audioContext.resume().catch(() => undefined)
+  }
+  return audioContext
+}
 function playSound(type: 'break' | 'place' | 'jump', volume: number) {
+  const audioContext = getAudioContext()
   const osc = audioContext.createOscillator()
   const gain = audioContext.createGain()
   osc.connect(gain)
@@ -1402,6 +1416,7 @@ const blockName = blockInfo.querySelector<HTMLDivElement>('.block-name')!
 const blockCount = blockInfo.querySelector<HTMLDivElement>('.block-count')!
 const hotbarSlots: HTMLButtonElement[] = []
 const hotbarCounts: HTMLSpanElement[] = []
+const wayfinderValue = document.querySelector<HTMLSpanElement>('.wayfinder-value')!
 
 function countBlocksInInventory(blockId: BlockId): number {
   return inventoryCounts.get(blockId) ?? 0
@@ -1418,7 +1433,43 @@ function updateHotbar() {
     hotbarSlots[i].classList.toggle('active', i === selected)
     hotbarCounts[i].textContent = String(countBlocksInInventory(BLOCKS[i].id))
   }
+  hotbarSlots[selected]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
   updateBlockInfo()
+}
+
+function directionLabel(dx: number, dz: number) {
+  const angle = Math.atan2(dx, -dz)
+  const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+  return directions[Math.round((angle / (Math.PI / 4) + 8) % 8)]
+}
+
+function updateShardSignal() {
+  if (collectedGlowShards >= EXPLORATION_GOAL_SHARDS) {
+    wayfinderValue.textContent = 'Complete'
+    return
+  }
+  let nearestKey = ''
+  let nearestDistanceSq = Infinity
+  const pos = controls.object.position
+  landmarkShardBlocks.forEach((key) => {
+    if (collectedShardBlocks.has(key)) return
+    getBlockPositionFromKey(key, hitBlockPosition)
+    const dx = hitBlockPosition.x - pos.x
+    const dz = hitBlockPosition.z - pos.z
+    const distanceSq = dx * dx + dz * dz
+    if (distanceSq < nearestDistanceSq) {
+      nearestDistanceSq = distanceSq
+      nearestKey = key
+    }
+  })
+  if (!nearestKey) {
+    wayfinderValue.textContent = `${collectedGlowShards}/${EXPLORATION_GOAL_SHARDS} · Explore`
+    return
+  }
+  getBlockPositionFromKey(nearestKey, hitBlockPosition)
+  const dx = hitBlockPosition.x - pos.x
+  const dz = hitBlockPosition.z - pos.z
+  wayfinderValue.textContent = `${collectedGlowShards}/${EXPLORATION_GOAL_SHARDS} · ${directionLabel(dx, dz)} ${Math.round(Math.hypot(dx, dz))}m`
 }
 
 function selectNextAvailableBlock() {
@@ -1483,6 +1534,7 @@ function updateOrientationClass() {
 }
 
 start.querySelector('button')!.addEventListener('click', () => {
+  getAudioContext()
   if (isTouchDevice) {
     mobileActive = true
     start.classList.add('hidden')
@@ -1604,7 +1656,7 @@ function placeTargetBlock() {
   const canReplaceWater = hitBlockId === 'water' && selectedBlock !== 'water'
 
   if (countBlocksInInventory(selectedBlock) <= 0) {
-    showToast(`No ${BLOCKS[selected].name} in inventory`)
+    showToast(`No ${BLOCKS[selected].name}`)
     return
   }
 
@@ -1626,7 +1678,7 @@ function placeTargetBlock() {
   placePosition.copy(hitBlockPosition).add(placeNormal).round()
   const key = blockKey(placePosition.x, placePosition.y, placePosition.z)
   if (blocks.has(key)) {
-    showToast('Space occupied')
+    showToast('Blocked')
     return
   }
   if (wouldTrapPlayer(placePosition)) {
@@ -1814,6 +1866,7 @@ function beginTouchMining() {
   if (mineProgressTimeoutId) window.clearTimeout(mineProgressTimeoutId)
   mineProgressTimeoutId = window.setTimeout(() => {
     if (touchMining) {
+      mineProgress.querySelector('span')!.textContent = 'Hold'
       mineProgress.classList.add('visible')
     }
   }, 120)
@@ -1828,6 +1881,7 @@ function cancelTouchMining() {
   }
   mineProgress.classList.remove('visible')
   mineProgress.classList.remove('mining-complete')
+  mineProgress.querySelector('span')!.textContent = 'Hold'
   mineRing.style.setProperty('--progress', '0deg')
 }
 
@@ -1838,6 +1892,7 @@ function updateTouchMining() {
   if (progress < 1 || touchMiningComplete) return
   touchMiningComplete = true
   mineProgress.classList.add('mining-complete')
+  mineProgress.querySelector('span')!.textContent = 'Break'
   breakTargetBlock()
   window.setTimeout(cancelTouchMining, 180)
 }
@@ -1942,6 +1997,7 @@ let lastSurvivalCharge = -1
 let lastSurvivalThreat = ''
 let lastSurvivalProtectionLabel = ''
 let lastSurvivalStyle = ''
+let lastShardSignalAt = -Infinity
 
 function updateSurvivalLoop(dt: number, day: number, elapsedTime: number) {
   const deepNight = day < 0.23
@@ -2089,6 +2145,10 @@ function animate() {
   const elapsedTime = clock.elapsedTime
   rebuildDirtyChunkVisibleFaceSummaries(currentFps > 0 && currentFps < 36 ? 4 : 12)
   updateFrameStats(dt, elapsedTime)
+  if (elapsedTime - lastShardSignalAt > 0.35) {
+    lastShardSignalAt = elapsedTime
+    updateShardSignal()
+  }
 
   // 更新粒子
   for (let i = particles.length - 1; i >= 0; i--) {
