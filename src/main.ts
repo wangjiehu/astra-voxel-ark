@@ -6,7 +6,7 @@ import { animateBlockMaterials, createBlockMaterials } from './textures'
 import { blockKey, terrainNoise } from './worldMath'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
-const GAME_VERSION_LABEL = 'v1.3 DDA Raycast'
+const GAME_VERSION_LABEL = 'v1.3.2 Interaction Polish'
 const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0
 const isSmallScreen = Math.min(window.innerWidth, window.innerHeight) <= 760
 const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -88,7 +88,7 @@ app.innerHTML = `
       </div>
     </div>
     <div class="rotate-prompt"><div><span>↻</span><strong>请横屏游玩</strong><small>Rotate your phone to landscape</small></div></div>
-    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v1.3</h2><p>DDA Raycast - optimized block picking with grid traversal</p><button>Start Exploring</button></div></div>
+    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v1.3.2</h2><p>Interaction polish - cleaner block preview, feedback, and inventory flow</p><button>Start Exploring</button></div></div>
   </div>
 `
 
@@ -1314,7 +1314,13 @@ generateWorld()
 
 const toast = document.querySelector<HTMLDivElement>('.toast')!
 let toastTimer = 0
+let lastToastMessage = ''
+let lastToastAt = -Infinity
 function showToast(message: string) {
+  const now = performance.now()
+  if (message === lastToastMessage && now - lastToastAt < 900) return
+  lastToastMessage = message
+  lastToastAt = now
   toast.textContent = message
   toast.classList.add('visible')
   window.clearTimeout(toastTimer)
@@ -1415,6 +1421,12 @@ function updateHotbar() {
   updateBlockInfo()
 }
 
+function selectNextAvailableBlock() {
+  if (countBlocksInInventory(BLOCKS[selected].id) > 0) return
+  const nextIndex = BLOCKS.findIndex((block) => countBlocksInInventory(block.id) > 0)
+  if (nextIndex >= 0 && nextIndex !== selected) selected = nextIndex
+}
+
 function renderHotbar() {
   hotbar.innerHTML = BLOCKS.map((b, i) => {
     const count = countBlocksInInventory(b.id)
@@ -1460,10 +1472,15 @@ if (isTouchDevice) {
 
 function updateOrientationClass() {
   document.body.classList.toggle('portrait-touch', isTouchDevice && window.innerHeight > window.innerWidth)
+  if (isTouchDevice && window.innerHeight > window.innerWidth) {
+    keys.clear()
+    mobileMove.set(0, 0)
+    joystickPointerId = null
+    lookPointerId = null
+    stick.style.transform = 'translate(-50%, -50%)'
+    cancelTouchMining()
+  }
 }
-updateOrientationClass()
-window.addEventListener('resize', updateOrientationClass)
-window.addEventListener('orientationchange', updateOrientationClass)
 
 start.querySelector('button')!.addEventListener('click', () => {
   if (isTouchDevice) {
@@ -1592,11 +1609,15 @@ function placeTargetBlock() {
   }
 
   if (canReplaceWater) {
-    if (wouldTrapPlayer(hitBlockPosition)) return
+    if (wouldTrapPlayer(hitBlockPosition)) {
+      showToast('Too close to place')
+      return
+    }
     playSound('place', 0.25)
     removeBlockAtKey(hitKey)
     addBlock(hitBlockPosition.x, hitBlockPosition.y, hitBlockPosition.z, selectedBlock, 'player')
     consumeInventory(selectedBlock)
+    selectNextAvailableBlock()
     updateHotbar()
     return
   }
@@ -1604,12 +1625,19 @@ function placeTargetBlock() {
   placeNormal.copy(hit.normal.lengthSq() > 0 ? hit.normal : upNormal)
   placePosition.copy(hitBlockPosition).add(placeNormal).round()
   const key = blockKey(placePosition.x, placePosition.y, placePosition.z)
-  if (!blocks.has(key) && !wouldTrapPlayer(placePosition)) {
-    playSound('place', 0.25)
-    addBlock(placePosition.x, placePosition.y, placePosition.z, selectedBlock, 'player')
-    consumeInventory(selectedBlock)
-    updateHotbar()
+  if (blocks.has(key)) {
+    showToast('Space occupied')
+    return
   }
+  if (wouldTrapPlayer(placePosition)) {
+    showToast('Too close to place')
+    return
+  }
+  playSound('place', 0.25)
+  addBlock(placePosition.x, placePosition.y, placePosition.z, selectedBlock, 'player')
+  consumeInventory(selectedBlock)
+  selectNextAvailableBlock()
+  updateHotbar()
 }
 
 function collectExplorationShard(blockKey: string, blockId: BlockId) {
@@ -1777,6 +1805,7 @@ function isUiTouch(target: HTMLElement | null): boolean {
 let mineProgressTimeoutId: number | null = null
 
 function beginTouchMining() {
+  if (!pickBlock()) return
   touchMining = true
   touchMiningComplete = false
   touchMiningStartedAt = performance.now()
@@ -1812,6 +1841,10 @@ function updateTouchMining() {
   breakTargetBlock()
   window.setTimeout(cancelTouchMining, 180)
 }
+
+updateOrientationClass()
+window.addEventListener('resize', updateOrientationClass)
+window.addEventListener('orientationchange', updateOrientationClass)
 
 renderer.domElement.addEventListener('pointerdown', (event) => {
   if (!mobileActive || isUiTouch(event.target as HTMLElement)) return
@@ -2077,7 +2110,7 @@ function animate() {
 
   // 更新放置预览 ghost box
   const hit = pickBlock()
-  if (hit && hit.distance <= RAYCAST_REACH && countBlocksInInventory(BLOCKS[selected].id) > 0) {
+  if (hit && hit.distance <= RAYCAST_REACH) {
     getBlockPositionFromKey(hit.key, hitBlockPosition)
     const hitBlockId = blockData.get(hit.key)
     const canReplaceWater = hitBlockId === 'water' && BLOCKS[selected].id !== 'water'
@@ -2090,7 +2123,8 @@ function animate() {
     }
     
     const key = blockKey(placePosition.x, placePosition.y, placePosition.z)
-    const isValidPlacement = !blocks.has(key) && !wouldTrapPlayer(placePosition)
+    const hasInventory = countBlocksInInventory(BLOCKS[selected].id) > 0
+    const isValidPlacement = hasInventory && (canReplaceWater || !blocks.has(key)) && !wouldTrapPlayer(placePosition)
     
     if (!previewMesh) {
       previewMesh = new THREE.Mesh(previewGeometry, previewMaterial)
@@ -2098,7 +2132,7 @@ function animate() {
       previewMesh.receiveShadow = false
       scene.add(previewMesh)
     }
-    previewMesh.position.copy(placePosition).add(new THREE.Vector3(0.5, 0.5, 0.5))
+    previewMesh.position.copy(placePosition)
     const material = previewMesh.material as THREE.MeshStandardMaterial
     material.opacity = isValidPlacement ? 0.35 : 0.55
     material.emissive.setHex(isValidPlacement ? 0x4488ff : 0xff6666)
