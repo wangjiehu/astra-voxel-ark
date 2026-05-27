@@ -6,7 +6,7 @@ import { animateBlockMaterials, createBlockMaterials } from './textures'
 import { blockKey, terrainNoise } from './worldMath'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
-const GAME_VERSION_LABEL = 'v1.2 Chunk Mesh Foundation'
+const GAME_VERSION_LABEL = 'v1.3 DDA Raycast'
 const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0
 const isSmallScreen = Math.min(window.innerWidth, window.innerHeight) <= 760
 const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -88,7 +88,7 @@ app.innerHTML = `
       </div>
     </div>
     <div class="rotate-prompt"><div><span>↻</span><strong>请横屏游玩</strong><small>Rotate your phone to landscape</small></div></div>
-    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v1.2</h2><p>Chunk Mesh Foundation - visible-face chunk metadata for future meshing</p><button>Start Exploring</button></div></div>
+    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v1.3</h2><p>DDA Raycast - optimized block picking with grid traversal</p><button>Start Exploring</button></div></div>
   </div>
 `
 
