@@ -319,3 +319,84 @@ body.portrait-touch .mobile-controls, body.portrait-touch .hotbar { display: non
     font-size: 11px;
   }
 }
+
+/* v1.4 compass */
+.compass-badge {
+  position: absolute;
+  left: 24px;
+  top: 364px;
+  min-width: 220px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(9,14,31,.66), rgba(35,60,86,.42));
+  border: 1px solid rgba(169,239,255,.28);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 14px 36px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.12);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-family: monospace;
+  color: #fff3a8;
+}
+.compass-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(255,243,168,.12);
+  border: 1px solid rgba(255,243,168,.35);
+  font-size: 16px;
+  line-height: 1;
+  transition: transform 0.18s ease;
+}
+.compass-distance {
+  font-weight: 800;
+  opacity: 0.92;
+}
+.compass-badge.complete .compass-arrow {
+  background: rgba(168,255,185,.16);
+  border-color: rgba(168,255,185,.5);
+  color: #a8ffb9;
+}
+.compass-badge.complete .compass-distance {
+  color: #a8ffb9;
+}
+@keyframes compass-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(255,243,168,.5); }
+  100% { box-shadow: 0 0 0 14px rgba(255,243,168,0); }
+}
+.compass-badge.pulse {
+  animation: compass-pulse 0.65s ease-out;
+}
+.slot.empty { opacity: .35; filter: saturate(0.3); }
+
+/* mobile compass stacking */
+@media (pointer: coarse), (max-width: 760px) {
+  .compass-badge {
+    left: calc(12px + env(safe-area-inset-left));
+    top: 138px;
+    min-width: 0;
+    width: min(238px, calc(100vw - 72px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+    padding: 8px 12px;
+    border-radius: 14px;
+    font-size: 10px;
+    background: rgba(9, 14, 31, 0.92) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  .compass-arrow { width: 24px; height: 24px; font-size: 13px; }
+}
+
+@media (max-height: 520px) and (orientation: landscape) {
+  .compass-badge {
+    left: clamp(calc(142px + env(safe-area-inset-left)), 28vw, calc(175px + env(safe-area-inset-left)));
+    top: 88px;
+    width: min(320px, calc(100vw - 300px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+    height: 32px;
+    padding: 0 12px;
+    border-radius: 12px;
+  }
+}

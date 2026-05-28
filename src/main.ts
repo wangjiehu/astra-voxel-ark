@@ -6,7 +6,7 @@ import { animateBlockMaterials, createBlockMaterials } from './textures'
 import { blockKey, terrainNoise } from './worldMath'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
-const GAME_VERSION_LABEL = 'v1.3.3 Wayfinder Polish'
+const GAME_VERSION_LABEL = 'v1.4 Beacon Trail'
 const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0
 const isSmallScreen = Math.min(window.innerWidth, window.innerHeight) <= 760
 const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -15,12 +15,16 @@ const lowPowerMode = isTouchDevice || isSmallScreen || prefersReducedMotion
 app.innerHTML = `
   <div class="hud">
     <div class="title"><span class="eyebrow">VOXEL SANDBOX</span><h1>ASTRAVOXEL ARK</h1><p>${GAME_VERSION_LABEL}</p></div>
-    <div class="help"><strong>Controls</strong><br/><span class="desktop-help">WASD move · Space jump<br/>Mouse look · Left break · Right place<br/>1-18 select block · Click to enter<br/>Goal: find 6 landmark shards</span><span class="mobile-help">Left joystick: move · Drag right: look<br/>Tap right side: place · Hold right side: break<br/>Goal: find landmark shards</span></div>
+    <div class="help"><strong>Controls</strong><br/><span class="desktop-help">WASD move · Space jump<br/>Mouse look · Left break · Right place<br/>1-18 select block · Click to enter<br/>Goal: follow beacon to find 6 landmark shards</span><span class="mobile-help">Left joystick: move · Drag right: look<br/>Tap right side: place · Hold right side: break<br/>Follow beacon to find shards</span></div>
     <div class="world-badge"><span class="badge-pulse"></span>${GAME_VERSION_LABEL}</div>
 
     <div class="wayfinder-badge">
       <span class="wayfinder-label">Shard Signal</span>
       <span class="wayfinder-value">Scanning</span>
+    </div>
+    <div class="compass-badge" aria-live="polite">
+      <span class="compass-arrow">↑</span>
+      <span class="compass-distance">Beacon scanning</span>
     </div>
     <div class="survival-badge">
       <div class="survival-title">SURVIVAL DIAGNOSTICS</div>
@@ -67,7 +71,7 @@ app.innerHTML = `
     </div>
     <button class="help-toggle-btn" aria-label="Toggle Help">?</button>
     <div class="tutorial">
-      <p><strong>🎮 Tips:</strong> Click to enter · Find 6 landmark shards · Save often</p>
+      <p><strong>🎮 Tips:</strong> Click to enter · Follow beacon to shards · Save often</p>
     </div>
     <div class="save-tools">
       <button class="save-btn">Save</button>
@@ -92,7 +96,7 @@ app.innerHTML = `
       </div>
     </div>
     <div class="rotate-prompt"><div><span>↻</span><strong>请横屏游玩</strong><small>Rotate your phone to landscape</small></div></div>
-    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v1.3.3</h2><p>Wayfinder polish - clearer shard goals, placement feedback, and mobile flow</p><button>Start Exploring</button></div></div>
+    <div class="start"><div class="panel"><span class="crest">✦</span><h2>星野方舟 v1.4</h2><p>Beacon Trail - in-world shard beacon, compass pulse, and safer controls</p><button>Start Exploring</button></div></div>
   </div>
 `
 
@@ -1078,10 +1082,12 @@ function movePlayerVertical(deltaY: number) {
 }
 
 // 破坏粒子系统
-const particles: Array<{ mesh: THREE.Mesh; vx: number; vy: number; vz: number; life: number }> = []
+type Particle = { mesh: THREE.Mesh; vx: number; vy: number; vz: number; life: number }
+const particles: Particle[] = []
 const breakParticleGeometry = new THREE.BoxGeometry(0.15, 0.15, 0.15)
 const breakParticleMaterials = new Map<BlockId, THREE.MeshStandardMaterial>()
 const breakParticleOffset = new THREE.Vector3()
+const shardBurstMaterial = new THREE.MeshBasicMaterial({ color: 0xfff3a8, transparent: true, opacity: 0.92 })
 
 // 放置预览 ghost box
 const previewGeometry = new THREE.BoxGeometry(1, 1, 1)
@@ -1146,6 +1152,25 @@ function createBreakParticles(position: THREE.Vector3, blockId: BlockId) {
     requestAnimationFrame(shakeFrame)
   }
   shakeFrame()
+}
+
+function createShardBurst(position: THREE.Vector3) {
+  if (cosmeticEffectsReduced && particles.length > 24) return
+  const particleCount = cosmeticEffectsReduced ? 8 : 16
+  for (let i = 0; i < particleCount; i++) {
+    const mesh = new THREE.Mesh(sparkleGeo, shardBurstMaterial)
+    breakParticleOffset.set((Math.random() - 0.5) * 0.7, (Math.random() - 0.2) * 0.7, (Math.random() - 0.5) * 0.7)
+    mesh.position.copy(position).add(breakParticleOffset)
+    mesh.scale.setScalar(1.4 + Math.random() * 1.8)
+    scene.add(mesh)
+    particles.push({
+      mesh,
+      vx: (Math.random() - 0.5) * 7,
+      vy: 2.8 + Math.random() * 4.5,
+      vz: (Math.random() - 0.5) * 7,
+      life: cosmeticEffectsReduced ? 0.55 : 0.9,
+    })
+  }
 }
 
 // 简单音效 (Web Audio API)
@@ -1358,7 +1383,17 @@ importInput.addEventListener('change', () => {
   if (file) importWorld(file)
   importInput.value = ''
 })
-resetButton.addEventListener('click', resetWorld)
+let resetConfirmUntil = 0
+resetButton.addEventListener('click', () => {
+  const now = performance.now()
+  if (now > resetConfirmUntil) {
+    resetConfirmUntil = now + 3000
+    showToast('Tap Reset again to confirm')
+    return
+  }
+  resetConfirmUntil = 0
+  resetWorld()
+})
 if (localStorage.getItem(SAVE_KEY)) loadWorld()
 
 const platform = new THREE.Mesh(
@@ -1409,6 +1444,22 @@ for (let i = 0; i < 120; i++) {
 }
 scene.add(sparkles)
 
+const shardBeacon = new THREE.Group()
+const shardBeaconRing = new THREE.Mesh(
+  new THREE.TorusGeometry(0.72, 0.035, 8, 48),
+  new THREE.MeshBasicMaterial({ color: 0xfff3a8, transparent: true, opacity: 0.78 })
+)
+const shardBeaconHalo = new THREE.Mesh(
+  new THREE.RingGeometry(0.25, 0.95, 48),
+  new THREE.MeshBasicMaterial({ color: 0x9ee8ff, transparent: true, opacity: 0.28, side: THREE.DoubleSide })
+)
+const shardBeaconLight = new THREE.PointLight(0xfff3a8, lowPowerMode ? 0 : 0.9, 8)
+shardBeaconRing.rotation.x = Math.PI / 2
+shardBeaconHalo.rotation.x = -Math.PI / 2
+shardBeacon.add(shardBeaconRing, shardBeaconHalo, shardBeaconLight)
+shardBeacon.visible = false
+scene.add(shardBeacon)
+
 let selected = 0
 const hotbar = document.querySelector<HTMLDivElement>('.hotbar')!
 const blockInfo = document.querySelector<HTMLDivElement>('.block-info')!
@@ -1417,6 +1468,9 @@ const blockCount = blockInfo.querySelector<HTMLDivElement>('.block-count')!
 const hotbarSlots: HTMLButtonElement[] = []
 const hotbarCounts: HTMLSpanElement[] = []
 const wayfinderValue = document.querySelector<HTMLSpanElement>('.wayfinder-value')!
+const compassBadge = document.querySelector<HTMLDivElement>('.compass-badge')!
+const compassArrow = document.querySelector<HTMLSpanElement>('.compass-arrow')!
+const compassDistance = document.querySelector<HTMLSpanElement>('.compass-distance')!
 
 function countBlocksInInventory(blockId: BlockId): number {
   return inventoryCounts.get(blockId) ?? 0
@@ -1430,8 +1484,10 @@ function updateBlockInfo() {
 
 function updateHotbar() {
   for (let i = 0; i < hotbarSlots.length; i++) {
+    const count = countBlocksInInventory(BLOCKS[i].id)
     hotbarSlots[i].classList.toggle('active', i === selected)
-    hotbarCounts[i].textContent = String(countBlocksInInventory(BLOCKS[i].id))
+    hotbarSlots[i].classList.toggle('empty', count <= 0)
+    hotbarCounts[i].textContent = String(count)
   }
   hotbarSlots[selected]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
   updateBlockInfo()
@@ -1443,11 +1499,7 @@ function directionLabel(dx: number, dz: number) {
   return directions[Math.round((angle / (Math.PI / 4) + 8) % 8)]
 }
 
-function updateShardSignal() {
-  if (collectedGlowShards >= EXPLORATION_GOAL_SHARDS) {
-    wayfinderValue.textContent = 'Complete'
-    return
-  }
+function findNearestShard() {
   let nearestKey = ''
   let nearestDistanceSq = Infinity
   const pos = controls.object.position
@@ -1462,14 +1514,54 @@ function updateShardSignal() {
       nearestKey = key
     }
   })
-  if (!nearestKey) {
+  if (!nearestKey) return null
+  getBlockPositionFromKey(nearestKey, hitBlockPosition)
+  return {
+    key: nearestKey,
+    x: hitBlockPosition.x,
+    y: hitBlockPosition.y,
+    z: hitBlockPosition.z,
+    dx: hitBlockPosition.x - pos.x,
+    dz: hitBlockPosition.z - pos.z,
+    distance: Math.sqrt(nearestDistanceSq),
+  }
+}
+
+function updateCompassUi(nearest: ReturnType<typeof findNearestShard>) {
+  if (collectedGlowShards >= EXPLORATION_GOAL_SHARDS) {
+    compassBadge.classList.add('complete')
+    compassArrow.style.transform = 'rotate(0deg)'
+    compassDistance.textContent = 'Goal complete'
+    shardBeacon.visible = false
+    return
+  }
+  compassBadge.classList.remove('complete')
+  if (!nearest) {
+    compassArrow.style.transform = 'rotate(0deg)'
+    compassDistance.textContent = 'Explore to scan'
+    shardBeacon.visible = false
+    return
+  }
+  const yaw = controls.object.rotation.y
+  const worldAngle = Math.atan2(nearest.dx, -nearest.dz)
+  compassArrow.style.transform = `rotate(${worldAngle - yaw}rad)`
+  compassDistance.textContent = `${directionLabel(nearest.dx, nearest.dz)} · ${Math.round(nearest.distance)}m`
+  shardBeacon.position.set(nearest.x, nearest.y + 2.35, nearest.z)
+  shardBeacon.visible = true
+}
+
+function updateShardSignal() {
+  const nearest = findNearestShard()
+  updateCompassUi(nearest)
+  if (collectedGlowShards >= EXPLORATION_GOAL_SHARDS) {
+    wayfinderValue.textContent = 'Complete'
+    return
+  }
+  if (!nearest) {
     wayfinderValue.textContent = `${collectedGlowShards}/${EXPLORATION_GOAL_SHARDS} · Explore`
     return
   }
-  getBlockPositionFromKey(nearestKey, hitBlockPosition)
-  const dx = hitBlockPosition.x - pos.x
-  const dz = hitBlockPosition.z - pos.z
-  wayfinderValue.textContent = `${collectedGlowShards}/${EXPLORATION_GOAL_SHARDS} · ${directionLabel(dx, dz)} ${Math.round(Math.hypot(dx, dz))}m`
+  wayfinderValue.textContent = `${collectedGlowShards}/${EXPLORATION_GOAL_SHARDS} · ${directionLabel(nearest.dx, nearest.dz)} ${Math.round(nearest.distance)}m`
 }
 
 function selectNextAvailableBlock() {
@@ -1481,7 +1573,7 @@ function selectNextAvailableBlock() {
 function renderHotbar() {
   hotbar.innerHTML = BLOCKS.map((b, i) => {
     const count = countBlocksInInventory(b.id)
-    return `<button class="slot ${i === selected ? 'active' : ''}" data-slot="${i}" aria-label="Select ${b.name}"><span class="key">${i + 1}</span><span class="swatch" style="background:#${b.color.toString(16).padStart(6, '0')}"></span><span class="name">${b.name}</span><span class="count">${count}</span></button>`
+    return `<button class="slot ${i === selected ? 'active' : ''} ${count <= 0 ? 'empty' : ''}" data-slot="${i}" aria-label="Select ${b.name}"><span class="key">${i + 1}</span><span class="swatch" style="background:#${b.color.toString(16).padStart(6, '0')}"></span><span class="name">${b.name}</span><span class="count">${count}</span></button>`
   }).join('')
   hotbarSlots.length = 0
   hotbarCounts.length = 0
@@ -1517,7 +1609,7 @@ helpToggleBtn.addEventListener('click', (e) => {
 if (isTouchDevice) {
   const tutorial = document.querySelector<HTMLDivElement>('.tutorial')
   if (tutorial) {
-    tutorial.innerHTML = `<p><strong>🎮 Tips:</strong> Drag screen to look · Joystick to move · Tap right to place · Long-press to break</p>`
+    tutorial.innerHTML = `<p><strong>🎮 Tips:</strong> Drag screen to look · Joystick to move · Tap right to place · Long-press to break · Swipe hotbar</p>`
   }
 }
 
@@ -1554,6 +1646,12 @@ document.addEventListener('keydown', (e) => {
   if (n >= 1 && n <= BLOCKS.length) { selected = n - 1; updateHotbar() }
   if (e.code === 'Space') runJump()
 })
+renderer.domElement.addEventListener('wheel', (event) => {
+  if (!controls.isLocked) return
+  event.preventDefault()
+  selected = (selected + (event.deltaY > 0 ? 1 : -1) + BLOCKS.length) % BLOCKS.length
+  updateHotbar()
+}, { passive: false })
 document.addEventListener('keyup', (e) => keys.delete(e.code))
 window.addEventListener('blur', () => {
   keys.clear()
@@ -1697,6 +1795,10 @@ function collectExplorationShard(blockKey: string, blockId: BlockId) {
     return false
   }
 
+  getBlockPositionFromKey(blockKey, hitBlockPosition)
+  createShardBurst(hitBlockPosition)
+  compassBadge.classList.add('pulse')
+  window.setTimeout(() => compassBadge.classList.remove('pulse'), 650)
   landmarkShardBlocks.delete(blockKey)
   collectedShardBlocks.add(blockKey)
   collectedGlowShards = Math.min(EXPLORATION_GOAL_SHARDS, collectedGlowShards + 1)
@@ -1753,7 +1855,7 @@ let touchMining = false
 let touchMiningComplete = false
 let touchMiningStartedAt = 0
 let touchStartedOnRight = false
-const TOUCH_TAP_MAX_MOVE = 24
+const TOUCH_TAP_MAX_MOVE = isTouchDevice ? 30 : 24
 const TOUCH_MINE_MS = 650
 
 function stopUiTouch(event: Event) {
@@ -1866,7 +1968,7 @@ function beginTouchMining() {
   if (mineProgressTimeoutId) window.clearTimeout(mineProgressTimeoutId)
   mineProgressTimeoutId = window.setTimeout(() => {
     if (touchMining) {
-      mineProgress.querySelector('span')!.textContent = 'Hold'
+      mineProgress.querySelector('span')!.textContent = 'Hold to break'
       mineProgress.classList.add('visible')
     }
   }, 120)
@@ -2195,12 +2297,21 @@ function animate() {
     previewMesh.position.copy(placePosition)
     const material = previewMesh.material as THREE.MeshStandardMaterial
     material.opacity = isValidPlacement ? 0.35 : 0.55
+    material.color.setHex(isValidPlacement ? BLOCKS[selected].color : 0xff6666)
     material.emissive.setHex(isValidPlacement ? 0x4488ff : 0xff6666)
     previewMesh.visible = true
   } else {
     if (previewMesh) {
       previewMesh.visible = false
     }
+  }
+
+  if (shardBeacon.visible) {
+    const pulse = 1 + Math.sin(elapsedTime * 4.2) * 0.11
+    shardBeaconRing.rotation.z += dt * 1.4
+    shardBeaconHalo.rotation.z -= dt * 0.7
+    shardBeacon.scale.setScalar(pulse)
+    ;(shardBeaconRing.material as THREE.MeshBasicMaterial).opacity = cosmeticEffectsReduced ? 0.45 : 0.68 + Math.sin(elapsedTime * 3.4) * 0.16
   }
 
   const t = elapsedTime * 0.055
